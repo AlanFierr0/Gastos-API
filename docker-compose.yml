@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:latest
+    container_name: gastos-db
+    command: ["postgres", "-c", "port=6544"]
+    ports:
+      - "${DB_PORT:-6544}:6544"
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
