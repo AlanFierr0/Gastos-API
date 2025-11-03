@@ -39,8 +39,8 @@ cp .env.example .env
 
 Editar `.env` con tus credenciales de PostgreSQL:
 ```
-DATABASE_URL="postgresql://user:password@localhost:5432/gastos_db?schema=public"
-PORT=3000
+DATABASE_URL="postgresql://postgres:postgres@localhost:6544/gastos_db?schema=public"
+PORT=6543
 ```
 
 4. Generar cliente de Prisma:

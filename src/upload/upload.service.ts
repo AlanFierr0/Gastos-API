@@ -1,7 +1,6 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import * as XLSX from 'xlsx';
-import { CreateRecordDto } from './dto/create-record.dto';
 
 @Injectable()
 export class UploadService {
@@ -43,33 +42,48 @@ export class UploadService {
       throw new BadRequestException('Excel file is empty');
     }
 
-    // Process and save records with validation
-    const savedRecords = [];
+    // Validate minimal columns
+    const first = data[0] as any;
+    const hasAmount = first && (first['amount'] !== undefined || first['monto'] !== undefined || first['Monto'] !== undefined);
+    const hasDate = first && (first['date'] !== undefined || first['fecha'] !== undefined || first['Fecha'] !== undefined);
+    if (!hasAmount || !hasDate) {
+      throw new BadRequestException('Excel must contain at least amount and date columns');
+    }
+
+    // Process and save rows as expenses or incomes
+    const savedRecords = [] as any[];
     for (const row of data) {
-      // Sanitize and validate input
-      const concepto = this.sanitizeString(row['concepto'] || row['Concepto']);
-      const monto = this.parseNumber(row['monto'] || row['Monto']);
-      const fecha = this.parseDate(row['fecha'] || row['Fecha']);
+      const type = (this.sanitizeString(row['type'] || row['Type']) || '').toLowerCase();
+      const amount = this.parseNumber(row['amount'] || row['monto'] || row['Monto']);
+      const date = this.parseDate(row['date'] || row['fecha'] || row['Fecha']);
+      const notes = this.sanitizeString(row['notes'] || row['descripcion'] || row['Descripcion']);
 
-      if (!concepto || monto === null || !fecha) {
-        continue; // Skip invalid rows
+      if (amount === null || !date) continue;
+
+      if (type === 'income' || row['source'] || row['Source']) {
+        const source = this.sanitizeString(row['source'] || row['Source'] || 'Income') || 'Income';
+        const created = await this.prisma.income.create({
+          data: { source, amount, date, notes: notes || undefined },
+        });
+        savedRecords.push({ kind: 'income', ...created });
+      } else {
+        const categoryName = this.sanitizeString(row['category'] || row['Category'] || row['categoria'] || row['Categoria']) || 'Uncategorized';
+        const category = await this.prisma.category.upsert({
+          where: { name: categoryName },
+          update: {},
+          create: { name: categoryName, type: 'expense' },
+        });
+        const created = await this.prisma.expense.create({
+          data: { categoryId: category.id, amount, date, notes: notes || undefined },
+          include: { category: true },
+        });
+        savedRecords.push({ kind: 'expense', ...created });
       }
-
-      const record = await this.prisma.record.create({
-        data: {
-          concepto,
-          monto,
-          fecha,
-          categoria: this.sanitizeString(row['categoria'] || row['Categoria']) || null,
-          descripcion: this.sanitizeString(row['descripcion'] || row['Descripcion']) || null,
-        },
-      });
-      savedRecords.push(record);
     }
 
     return {
       success: true,
-      message: `${savedRecords.length} records imported successfully`,
+      message: `${savedRecords.length} rows imported successfully`,
       records: savedRecords,
     };
   }
