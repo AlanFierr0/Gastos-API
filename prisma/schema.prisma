@@ -21,7 +21,7 @@ model CategoryType {
 
 model Category {
   id     String @id @default(uuid())
-  name   String
+  name   String @unique
   typeId String
   type   CategoryType @relation(fields: [typeId], references: [id])
   expenses Expense[]

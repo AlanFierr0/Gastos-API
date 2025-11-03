@@ -1,7 +1,6 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import * as XLSX from 'xlsx';
-import { CreateRecordDto } from './dto/create-record.dto';
 
 @Injectable()
 export class UploadService {
@@ -71,7 +70,8 @@ export class UploadService {
       } else {
         const categoryName = this.sanitizeString(row['category'] || row['Category'] || row['categoria'] || row['Categoria']) || 'Uncategorized';
         const typeRow = await this.prisma.categoryType.upsert({ where: { name: 'expense' }, update: {}, create: { name: 'expense' } });
-        const category = await this.prisma.category.upsert({ where: { name: categoryName }, update: {}, create: { name: categoryName, typeId: typeRow.id } });
+        const existingCategory = await this.prisma.category.findFirst({ where: { name: categoryName } });
+        const category = existingCategory || (await this.prisma.category.create({ data: { name: categoryName, typeId: typeRow.id } }));
         const personName = this.sanitizeString(row['person'] || row['Person']);
         let personId: string | undefined = undefined;
         if (personName) {

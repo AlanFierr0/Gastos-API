@@ -1,6 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
+import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -11,12 +12,33 @@ async function bootstrap() {
     transform: true,
   }));
 
-  // Enable CORS
-  app.enableCors();
+  // Enable CORS with explicit dev origins
+  app.enableCors({
+    origin: [
+      'http://localhost:5173',
+      'http://127.0.0.1:5173',
+      'http://localhost:3000', // swagger or same-origin tools
+    ],
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: true,
+    preflightContinue: false,
+    optionsSuccessStatus: 204,
+  });
 
-  const port = process.env.PORT;
+  // Swagger (OpenAPI)
+  const swaggerConfig = new DocumentBuilder()
+    .setTitle('Gastos API')
+    .setDescription('API REST para gastos, ingresos, categorías, personas, analytics y carga de Excel')
+    .setVersion('1.0.0')
+    .build();
+  const doc = SwaggerModule.createDocument(app, swaggerConfig);
+  SwaggerModule.setup('docs', app, doc);
+
+  const port = process.env.PORT || 3000;
   await app.listen(port);
   console.log(`Application is running on: http://localhost:${port}`);
+  console.log(`Swagger docs: http://localhost:${port}/docs`);
 }
 
 bootstrap();
