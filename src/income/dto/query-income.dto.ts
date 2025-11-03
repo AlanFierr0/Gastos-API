@@ -1,4 +1,4 @@
-import { IsISO8601, IsOptional, IsString, IsNumber } from 'class-validator';
+import { IsISO8601, IsOptional, IsString, IsNumber, IsUUID } from 'class-validator';
 import { Transform } from 'class-transformer';
 
 export class QueryIncomeDto {
@@ -23,6 +23,14 @@ export class QueryIncomeDto {
   @IsNumber()
   @Transform(({ value }) => (value !== undefined ? parseFloat(value) : undefined))
   maxAmount?: number;
+
+  @IsOptional()
+  @IsUUID()
+  categoryId?: string;
+
+  @IsOptional()
+  @IsUUID()
+  personId?: string;
 }
 
 

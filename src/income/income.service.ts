@@ -23,38 +23,72 @@ export class IncomeService {
       if (query.minAmount !== undefined) where.amount.gte = query.minAmount;
       if (query.maxAmount !== undefined) where.amount.lte = query.maxAmount;
     }
-    return this.prisma.income.findMany({ orderBy: { date: 'desc' }, where });
+    if (query.categoryId) where.categoryId = query.categoryId;
+    if (query.personId) where.personId = query.personId;
+    return this.prisma.income.findMany({ orderBy: { date: 'desc' }, where, include: { category: true, person: true } });
   }
 
   async findOne(id: string) {
-    const income = await this.prisma.income.findUnique({ where: { id } });
+    const income = await this.prisma.income.findUnique({ where: { id }, include: { category: true, person: true } });
     if (!income) throw new NotFoundException('Income not found');
     return income;
   }
 
-  create(dto: CreateIncomeDto) {
+  private toUtcNoon(dateIso: string): Date {
+    const d = new Date(dateIso);
+    d.setUTCHours(12, 0, 0, 0);
+    return d;
+  }
+
+  async create(dto: CreateIncomeDto) {
+    if (dto.categoryId) {
+      const category = await this.prisma.category.findUnique({ where: { id: dto.categoryId }, include: { type: true } });
+      if (!category || category.type.name.toLowerCase() !== 'income') {
+        throw new NotFoundException('Category not found or not of type "income"');
+      }
+    }
+    if (dto.personId) {
+      const person = await this.prisma.person.findUnique({ where: { id: dto.personId } });
+      if (!person) throw new NotFoundException('Person not found');
+    }
     return this.prisma.income.create({
       data: {
         source: dto.source,
         amount: dto.amount,
-        date: new Date(dto.date),
+        date: this.toUtcNoon(dto.date),
         notes: dto.notes,
         currency: dto.currency || 'USD',
+        categoryId: dto.categoryId,
+        personId: dto.personId,
       },
+      include: { category: true, person: true },
     });
   }
 
   async update(id: string, dto: UpdateIncomeDto) {
     await this.findOne(id);
+    if (dto.categoryId) {
+      const category = await this.prisma.category.findUnique({ where: { id: dto.categoryId }, include: { type: true } });
+      if (!category || category.type.name.toLowerCase() !== 'income') {
+        throw new NotFoundException('Category not found or not of type "income"');
+      }
+    }
+    if (dto.personId) {
+      const person = await this.prisma.person.findUnique({ where: { id: dto.personId } });
+      if (!person) throw new NotFoundException('Person not found');
+    }
     return this.prisma.income.update({
       where: { id },
       data: {
         source: dto.source,
         amount: dto.amount,
-        date: dto.date ? new Date(dto.date) : undefined,
+        date: dto.date ? this.toUtcNoon(dto.date) : undefined,
         notes: dto.notes,
+        currency: dto.currency,
+        categoryId: dto.categoryId,
+        personId: dto.personId,
       },
-      
+      include: { category: true, person: true },
     });
   }
 

@@ -31,6 +31,13 @@ export class ExpensesService {
     return expense;
   }
 
+  private toUtcNoon(dateIso: string): Date {
+    const d = new Date(dateIso);
+    // Normalize to 12:00 UTC to avoid boundary shifts
+    d.setUTCHours(12, 0, 0, 0);
+    return d;
+  }
+
   async create(dto: CreateExpenseDto) {
     const category = await this.prisma.category.findUnique({ where: { id: dto.categoryId }, include: { type: true } });
     if (!category || category.type.name.toLowerCase() !== 'expense') {
@@ -41,7 +48,7 @@ export class ExpensesService {
       if (!person) throw new NotFoundException('Person not found');
     }
     return this.prisma.expense.create({
-      data: { categoryId: dto.categoryId, personId: dto.personId, amount: dto.amount, date: new Date(dto.date), notes: dto.notes, currency: dto.currency || 'USD' },
+      data: { categoryId: dto.categoryId, personId: dto.personId, amount: dto.amount, date: this.toUtcNoon(dto.date), notes: dto.notes, currency: dto.currency || 'USD' },
       include: { category: true, person: true },
     });
   }
@@ -64,7 +71,7 @@ export class ExpensesService {
         categoryId: dto.categoryId,
         personId: dto.personId,
         amount: dto.amount,
-        date: dto.date ? new Date(dto.date) : undefined,
+        date: dto.date ? this.toUtcNoon(dto.date) : undefined,
         notes: dto.notes,
         currency: dto.currency,
       },

@@ -1,4 +1,4 @@
-import { IsNumber, IsISO8601, IsOptional, IsString, Min, Matches } from 'class-validator';
+import { IsNumber, IsISO8601, IsOptional, IsString, Min, Matches, IsUUID } from 'class-validator';
 import { Transform } from 'class-transformer';
 
 export class UpdateIncomeDto {
@@ -24,6 +24,14 @@ export class UpdateIncomeDto {
   @Matches(/^[A-Z]{3}$/)
   @Transform(({ value }) => (typeof value === 'string' ? value.toUpperCase() : value))
   currency?: string;
+
+  @IsOptional()
+  @IsUUID()
+  categoryId?: string;
+
+  @IsOptional()
+  @IsUUID()
+  personId?: string;
 }
 
 
