@@ -15,5 +15,20 @@ services:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
 
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gastos-api
+    environment:
+      NODE_ENV: production
+      PORT: ${PORT:-6543}
+      DATABASE_URL: ${DATABASE_URL}
+    depends_on:
+      - postgres
+    ports:
+      - "${PORT:-6543}:6543"
+    restart: unless-stopped
+
 volumes:
   postgres_data:
