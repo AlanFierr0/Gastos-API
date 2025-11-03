@@ -1,11 +1,17 @@
-import { IsEnum, IsString } from 'class-validator';
+import { IsOptional, IsString, IsUUID } from 'class-validator';
 
 export class CreateCategoryDto {
   @IsString()
   name: string;
 
-  @IsEnum(['expense', 'income'])
-  type: 'expense' | 'income';
+  // Either provide existing typeId or a typeName to create/find
+  @IsOptional()
+  @IsUUID()
+  typeId?: string;
+
+  @IsOptional()
+  @IsString()
+  typeName?: string;
 }
 
 

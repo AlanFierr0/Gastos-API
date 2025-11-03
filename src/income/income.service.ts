@@ -39,6 +39,7 @@ export class IncomeService {
         amount: dto.amount,
         date: new Date(dto.date),
         notes: dto.notes,
+        currency: dto.currency || 'USD',
       },
     });
   }
@@ -53,6 +54,7 @@ export class IncomeService {
         date: dto.date ? new Date(dto.date) : undefined,
         notes: dto.notes,
       },
+      
     });
   }
 

@@ -1,4 +1,4 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Query } from '@nestjs/common';
 import { AnalyticsService } from './analytics.service';
 
 @Controller('analytics')
@@ -6,22 +6,27 @@ export class AnalyticsController {
   constructor(private readonly analyticsService: AnalyticsService) {}
 
   @Get('total')
-  getTotalExpenses() {
-    return this.analyticsService.getTotalExpenses();
+  getTotalExpenses(@Query('currency') currency?: string) {
+    return this.analyticsService.getTotalExpenses(currency?.toUpperCase());
   }
 
   @Get('by-category')
-  getExpensesByCategory() {
-    return this.analyticsService.getExpensesByCategory();
+  getExpensesByCategory(@Query('currency') currency?: string) {
+    return this.analyticsService.getExpensesByCategory(currency?.toUpperCase());
   }
 
   @Get('by-month')
-  getExpensesByMonth() {
-    return this.analyticsService.getExpensesByMonth();
+  getExpensesByMonth(@Query('currency') currency?: string) {
+    return this.analyticsService.getExpensesByMonth(currency?.toUpperCase());
   }
 
   @Get('summary')
-  getSummary() {
-    return this.analyticsService.getSummary();
+  getSummary(@Query('currency') currency?: string) {
+    return this.analyticsService.getSummary(currency?.toUpperCase());
+  }
+
+  @Get('by-person')
+  getByPerson(@Query('currency') currency?: string) {
+    return this.analyticsService.getExpensesByPerson(currency?.toUpperCase());
   }
 }

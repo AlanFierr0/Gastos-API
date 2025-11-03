@@ -13,23 +13,38 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model Category {
+model CategoryType {
   id   String @id @default(uuid())
-  name String
-  type CategoryType
+  name String @unique
+  categories Category[]
+}
 
+model Category {
+  id     String @id @default(uuid())
+  name   String
+  typeId String
+  type   CategoryType @relation(fields: [typeId], references: [id])
+  expenses Expense[]
+}
+
+model Person {
+  id   String @id @default(uuid())
+  name String @unique
   expenses Expense[]
 }
 
 model Expense {
   id         String   @id @default(uuid())
   categoryId String
+  personId   String?
   amount     Float
   date       DateTime
   notes      String?
   createdAt  DateTime @default(now())
+  currency   String   @default("USD")
 
   category Category @relation(fields: [categoryId], references: [id])
+  person   Person?  @relation(fields: [personId], references: [id])
 }
 
 model Income {
@@ -39,9 +54,5 @@ model Income {
   date      DateTime
   notes     String?
   createdAt DateTime @default(now())
-}
-
-enum CategoryType {
-  expense
-  income
+  currency  String   @default("USD")
 }

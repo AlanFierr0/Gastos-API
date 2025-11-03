@@ -1,6 +1,7 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import * as XLSX from 'xlsx';
+import { CreateRecordDto } from './dto/create-record.dto';
 
 @Injectable()
 export class UploadService {
@@ -60,21 +61,25 @@ export class UploadService {
 
       if (amount === null || !date) continue;
 
+      const currency = (this.sanitizeString(row['currency'] || row['Currency']) || 'USD').toUpperCase();
       if (type === 'income' || row['source'] || row['Source']) {
         const source = this.sanitizeString(row['source'] || row['Source'] || 'Income') || 'Income';
         const created = await this.prisma.income.create({
-          data: { source, amount, date, notes: notes || undefined },
+          data: { source, amount, date, notes: notes || undefined, currency },
         });
         savedRecords.push({ kind: 'income', ...created });
       } else {
         const categoryName = this.sanitizeString(row['category'] || row['Category'] || row['categoria'] || row['Categoria']) || 'Uncategorized';
-        const category = await this.prisma.category.upsert({
-          where: { name: categoryName },
-          update: {},
-          create: { name: categoryName, type: 'expense' },
-        });
+        const typeRow = await this.prisma.categoryType.upsert({ where: { name: 'expense' }, update: {}, create: { name: 'expense' } });
+        const category = await this.prisma.category.upsert({ where: { name: categoryName }, update: {}, create: { name: categoryName, typeId: typeRow.id } });
+        const personName = this.sanitizeString(row['person'] || row['Person']);
+        let personId: string | undefined = undefined;
+        if (personName) {
+          const person = await this.prisma.person.upsert({ where: { name: personName }, update: {}, create: { name: personName } });
+          personId = person.id;
+        }
         const created = await this.prisma.expense.create({
-          data: { categoryId: category.id, amount, date, notes: notes || undefined },
+          data: { categoryId: category.id, personId, amount, date, notes: notes || undefined, currency },
           include: { category: true },
         });
         savedRecords.push({ kind: 'expense', ...created });
