@@ -13,14 +13,22 @@ export class UploadController {
   constructor(private readonly uploadService: UploadService) {}
 
   @Post('excel')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: {
+        fileSize: 10 * 1024 * 1024, // 10MB limit
+      },
+      fileFilter: (req, file, callback) => {
+        if (!file.originalname.match(/\.(xlsx|xls)$/)) {
+          return callback(new BadRequestException('Only Excel files are allowed'), false);
+        }
+        callback(null, true);
+      },
+    })
+  )
   async uploadExcel(@UploadedFile() file: Express.Multer.File) {
     if (!file) {
       throw new BadRequestException('No file uploaded');
-    }
-
-    if (!file.originalname.match(/\.(xlsx|xls)$/)) {
-      throw new BadRequestException('Only Excel files are allowed');
     }
 
     return this.uploadService.parseAndSaveExcel(file);

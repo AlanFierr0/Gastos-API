@@ -254,6 +254,20 @@ npm run prisma:migrate  # Ejecutar migraciones
 npm run prisma:studio   # Abrir Prisma Studio
 ```
 
+## Consideraciones de Seguridad
+
+### xlsx Library
+El proyecto utiliza la librería `xlsx` (versión 0.18.5) para el parseo de archivos Excel. Se han identificado vulnerabilidades conocidas en esta versión:
+- ReDoS (Regular Expression Denial of Service)
+- Prototype Pollution
+
+**Recomendaciones:**
+1. Valida y sanitiza todos los archivos Excel antes de procesarlos
+2. Implementa límites de tamaño de archivo
+3. Considera ejecutar el parseo en un proceso aislado
+4. Monitorea el repositorio de SheetJS para actualizaciones de seguridad
+5. Implementa validación adicional de los datos parseados antes de guardarlos en la base de datos
+
 ## Licencia
 
 ISC
