@@ -23,7 +23,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: ${PORT:-6543}
-      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@postgres:${DB_PORT}/${DB_NAME}?schema=public
     depends_on:
       - postgres
     ports:
