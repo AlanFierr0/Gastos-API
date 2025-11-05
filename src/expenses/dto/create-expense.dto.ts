@@ -20,7 +20,7 @@ export class CreateExpenseDto {
   @IsOptional()
   @Matches(/^[A-Z]{3}$/)
   @Transform(({ value }) => (typeof value === 'string' ? value.toUpperCase() : value))
-  currency?: string; // ISO 4217, default USD
+  currency?: string; // ISO 4217, default ARS
 
   @IsOptional()
   @IsUUID()

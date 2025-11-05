@@ -57,9 +57,10 @@ export class IncomeService {
         amount: dto.amount,
         date: this.toUtcNoon(dto.date),
         notes: dto.notes,
-        currency: dto.currency || 'USD',
+        currency: dto.currency || 'ARS',
         categoryId: dto.categoryId,
         personId: dto.personId,
+        isRecurring: dto.isRecurring ?? false,
       },
       include: { category: true, person: true },
     });
@@ -87,6 +88,7 @@ export class IncomeService {
         currency: dto.currency,
         categoryId: dto.categoryId,
         personId: dto.personId,
+        isRecurring: dto.isRecurring,
       },
       include: { category: true, person: true },
     });

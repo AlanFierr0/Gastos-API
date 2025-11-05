@@ -11,13 +11,13 @@ export class PersonsService {
   }
 
   create(dto: UpsertPersonDto) {
-    return this.prisma.person.create({ data: { name: dto.name } });
+    return this.prisma.person.create({ data: { name: dto.name, icon: dto.icon, color: dto.color } });
   }
 
   async update(id: string, dto: UpsertPersonDto) {
     const exists = await this.prisma.person.findUnique({ where: { id } });
     if (!exists) throw new NotFoundException('Person not found');
-    return this.prisma.person.update({ where: { id }, data: { name: dto.name } });
+    return this.prisma.person.update({ where: { id }, data: { name: dto.name, icon: dto.icon, color: dto.color } });
   }
 
   async remove(id: string) {

@@ -43,12 +43,25 @@ export class ExpensesService {
     if (!category || category.type.name.toLowerCase() !== 'expense') {
       throw new NotFoundException('Category not found or not of type "expense"');
     }
-    if (dto.personId) {
+    
+    // Si no se especifica persona, usar "Familiar" por defecto
+    let personId = dto.personId;
+    if (!personId) {
+      const familiar = await this.prisma.person.findUnique({ where: { name: 'Familiar' } });
+      if (familiar) {
+        personId = familiar.id;
+      } else {
+        // Si no existe "Familiar", crearla
+        const newFamiliar = await this.prisma.person.create({ data: { name: 'Familiar' } });
+        personId = newFamiliar.id;
+      }
+    } else {
       const person = await this.prisma.person.findUnique({ where: { id: dto.personId } });
       if (!person) throw new NotFoundException('Person not found');
     }
+    
     return this.prisma.expense.create({
-      data: { categoryId: dto.categoryId, personId: dto.personId, amount: dto.amount, date: this.toUtcNoon(dto.date), notes: dto.notes, currency: dto.currency || 'USD' },
+      data: { categoryId: dto.categoryId, personId, amount: dto.amount, date: this.toUtcNoon(dto.date), notes: dto.notes, currency: dto.currency || 'ARS' },
       include: { category: true, person: true },
     });
   }

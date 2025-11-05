@@ -29,10 +29,13 @@ model Category {
 }
 
 model Person {
-  id   String @id @default(uuid())
-  name String @unique
+  id        String   @id @default(uuid())
+  name      String   @unique
+  icon      String?  // Material icon name (e.g., 'person', 'face', 'child_care', etc.)
+  color     String?  // Hex color code (e.g., '#FF5733', '#33FF57', etc.)
   expenses Expense[]
   income Income[]
+  investments Investment[]
 }
 
 model Expense {
@@ -43,7 +46,7 @@ model Expense {
   date       DateTime
   notes      String?
   createdAt  DateTime @default(now())
-  currency   String   @default("USD")
+  currency   String   @default("ARS")
 
   category Category @relation(fields: [categoryId], references: [id])
   person   Person?  @relation(fields: [personId], references: [id])
@@ -58,8 +61,44 @@ model Income {
   date       DateTime
   notes      String?
   createdAt  DateTime @default(now())
-  currency   String   @default("USD")
+  currency   String   @default("ARS")
+  isRecurring Boolean @default(false)
 
   category Category? @relation(fields: [categoryId], references: [id])
   person   Person?  @relation(fields: [personId], references: [id])
+}
+
+model ExchangeRateHistory {
+  id         String   @id @default(uuid())
+  code       String   // USD_OFICIAL, USD_BLUE, etc.
+  name       String   // Dólar Oficial, Dólar Blue, etc.
+  buy        Float
+  sell       Float
+  year       Int
+  month      Int      // 1-12
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([code, year, month])
+  @@index([code, year, month])
+}
+
+model Investment {
+  id          String   @id @default(uuid())
+  type        String   // bitcoin, fci, acciones, etc.
+  name        String   // Nombre de la inversión
+  amount      Float    // Monto invertido
+  value       Float    // Valor actual
+  currency    String   @default("ARS")
+  date        DateTime // Fecha de inversión
+  personId    String?
+  notes       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  person      Person?  @relation(fields: [personId], references: [id])
+  
+  @@index([personId])
+  @@index([type])
+  @@index([date])
 }
