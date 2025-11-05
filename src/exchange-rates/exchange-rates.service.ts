@@ -25,7 +25,7 @@ export class ExchangeRatesService {
   async getExchangeRates(): Promise<ExchangeRate[]> {
     // Return cached data if still valid
     if (this.cache && Date.now() - this.cache.timestamp < this.CACHE_DURATION) {
-      this.logger.log('Returning cached exchange rates');
+      
       return this.cache.data;
     }
 
@@ -90,14 +90,14 @@ export class ExchangeRatesService {
       // Save historical data (once per month)
       await this.saveHistoricalData(rates);
 
-      this.logger.log(`Successfully fetched ${rates.length} exchange rates`);
+      
       return rates;
     } catch (error) {
-      this.logger.error('Failed to fetch exchange rates:', error.message);
+      this.logger.error(`Failed to fetch exchange rates: ${error?.message || error}`);
       
       // Return cached data if available, even if expired
       if (this.cache) {
-        this.logger.warn('Returning stale cached data due to API error');
+        
         return this.cache.data;
       }
 
@@ -161,9 +161,9 @@ export class ExchangeRatesService {
         });
       }
 
-      this.logger.log(`Saved historical exchange rates for ${year}-${month}`);
+      
     } catch (error) {
-      this.logger.error('Failed to save historical data:', error.message);
+      this.logger.error(`Failed to save historical data: ${error?.message || error}`);
     }
   }
 
@@ -193,7 +193,7 @@ export class ExchangeRatesService {
         updatedAt: h.updatedAt.toISOString(),
       }));
     } catch (error) {
-      this.logger.error('Failed to get historical rates:', error.message);
+      this.logger.error(`Failed to get historical rates: ${error?.message || error}`);
       return [];
     }
   }

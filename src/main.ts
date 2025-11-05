@@ -37,8 +37,7 @@ async function bootstrap() {
 
   const port = Number(process.env.PORT) || 6543;
   await app.listen(port);
-  console.log(`Application is running on: http://localhost:${port}`);
-  console.log(`Swagger docs: http://localhost:${port}/docs`);
+  
 }
 
 bootstrap();
