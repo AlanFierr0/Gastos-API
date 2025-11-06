@@ -28,20 +28,9 @@ model Category {
   income Income[]
 }
 
-model Person {
-  id        String   @id @default(uuid())
-  name      String   @unique
-  icon      String?  // Material icon name (e.g., 'person', 'face', 'child_care', etc.)
-  color     String?  // Hex color code (e.g., '#FF5733', '#33FF57', etc.)
-  expenses Expense[]
-  income Income[]
-  investments Investment[]
-}
-
 model Expense {
   id         String   @id @default(uuid())
   categoryId String
-  personId   String?
   amount     Float
   date       DateTime
   notes      String?
@@ -49,13 +38,11 @@ model Expense {
   currency   String   @default("ARS")
 
   category Category @relation(fields: [categoryId], references: [id])
-  person   Person?  @relation(fields: [personId], references: [id])
 }
 
 model Income {
   id         String   @id @default(uuid())
   categoryId String?
-  personId   String?
   source     String
   amount     Float
   date       DateTime
@@ -65,7 +52,6 @@ model Income {
   isRecurring Boolean @default(false)
 
   category Category? @relation(fields: [categoryId], references: [id])
-  person   Person?  @relation(fields: [personId], references: [id])
 }
 
 model ExchangeRateHistory {
@@ -91,14 +77,10 @@ model Investment {
   value       Float    // Valor actual
   currency    String   @default("ARS")
   date        DateTime // Fecha de inversión
-  personId    String?
   notes       String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
-
-  person      Person?  @relation(fields: [personId], references: [id])
   
-  @@index([personId])
   @@index([type])
   @@index([date])
 }

@@ -95,23 +95,4 @@ export class AnalyticsService {
     };
   }
 
-  async getExpensesByPerson(currency?: string) {
-    const grouped = await this.prisma.expense.groupBy({
-      where: currency ? { currency } : undefined,
-      by: ['personId'],
-      _sum: { amount: true },
-      _count: true,
-    });
-    const personIds = grouped.map(g => g.personId).filter(Boolean) as string[];
-    const persons = personIds.length
-      ? await this.prisma.person.findMany({ where: { id: { in: personIds } }, select: { id: true, name: true } })
-      : [];
-    const nameById = new Map(persons.map(p => [p.id, p.name] as const));
-    return grouped.map(g => ({
-      personId: g.personId,
-      person: g.personId ? (nameById.get(g.personId) || 'Unassigned') : 'Unassigned',
-      total: g._sum.amount || 0,
-      count: g._count,
-    }));
-  }
 }

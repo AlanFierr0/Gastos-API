@@ -1,4 +1,4 @@
-import { IsString, IsNumber, IsOptional, IsISO8601, IsUUID, Min, Matches } from 'class-validator';
+import { IsString, IsNumber, IsOptional, IsISO8601, Min, Matches } from 'class-validator';
 import { Transform } from 'class-transformer';
 
 export class UpdateInvestmentDto {
@@ -30,10 +30,6 @@ export class UpdateInvestmentDto {
   @IsOptional()
   @IsISO8601()
   date?: string;
-
-  @IsOptional()
-  @IsUUID()
-  personId?: string;
 
   @IsOptional()
   @IsString()

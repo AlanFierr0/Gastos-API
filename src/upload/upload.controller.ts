@@ -15,15 +15,6 @@ import { ApiConsumes, ApiTags } from '@nestjs/swagger';
 export class UploadController {
   constructor(private readonly uploadService: UploadService) {}
 
-  @Post('create-persons')
-  async createPersons(@Body() body: { personNames: string[] }) {
-    if (!body.personNames || !Array.isArray(body.personNames)) {
-      throw new BadRequestException('Person names array is required');
-    }
-
-    return this.uploadService.createPersons(body.personNames);
-  }
-
   @Post('preview')
   @ApiConsumes('multipart/form-data')
   @UseInterceptors(
@@ -48,12 +39,12 @@ export class UploadController {
   }
 
   @Post('confirm')
-  async confirmImport(@Body() body: { records: any[] }) {
+  async confirmImport(@Body() body: { records: any[]; errors?: any[]; warnings?: any[] }) {
     if (!body.records || !Array.isArray(body.records)) {
       throw new BadRequestException('Records array is required');
     }
 
-    return this.uploadService.saveParsedRecords(body.records);
+    return this.uploadService.saveParsedRecords(body.records, body.errors || [], body.warnings || []);
   }
 
   @Post('excel')

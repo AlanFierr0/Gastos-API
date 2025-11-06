@@ -23,10 +23,6 @@ export class QueryExpenseDto {
   @IsNumber()
   @Transform(({ value }) => (value !== undefined ? parseFloat(value) : undefined))
   maxAmount?: number;
-
-  @IsOptional()
-  @IsUUID()
-  personId?: string;
 }
 
 

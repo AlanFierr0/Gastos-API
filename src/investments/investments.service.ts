@@ -16,20 +16,13 @@ export class InvestmentsService {
         value: createInvestmentDto.value,
         currency: createInvestmentDto.currency || 'ARS',
         date: new Date(createInvestmentDto.date),
-        personId: createInvestmentDto.personId || undefined,
         notes: createInvestmentDto.notes || undefined,
-      },
-      include: {
-        person: true,
       },
     });
   }
 
   async findAll() {
     return this.prisma.investment.findMany({
-      include: {
-        person: true,
-      },
       orderBy: {
         date: 'desc',
       },
@@ -39,9 +32,6 @@ export class InvestmentsService {
   async findOne(id: string) {
     const investment = await this.prisma.investment.findUnique({
       where: { id },
-      include: {
-        person: true,
-      },
     });
 
     if (!investment) {
@@ -63,11 +53,7 @@ export class InvestmentsService {
         ...(updateInvestmentDto.value !== undefined && { value: updateInvestmentDto.value }),
         ...(updateInvestmentDto.currency && { currency: updateInvestmentDto.currency }),
         ...(updateInvestmentDto.date && { date: new Date(updateInvestmentDto.date) }),
-        ...(updateInvestmentDto.personId !== undefined && { personId: updateInvestmentDto.personId || null }),
         ...(updateInvestmentDto.notes !== undefined && { notes: updateInvestmentDto.notes || null }),
-      },
-      include: {
-        person: true,
       },
     });
   }

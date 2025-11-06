@@ -6,7 +6,6 @@ import { AnalyticsModule } from './analytics/analytics.module';
 import { ExpensesModule } from './expenses/expenses.module';
 import { IncomeModule } from './income/income.module';
 import { CategoriesModule } from './categories/categories.module';
-import { PersonsModule } from './persons/persons.module';
 import { ExchangeRatesModule } from './exchange-rates/exchange-rates.module';
 import { InvestmentsModule } from './investments/investments.module';
 
@@ -21,7 +20,6 @@ import { InvestmentsModule } from './investments/investments.module';
     ExpensesModule,
     IncomeModule,
     CategoriesModule,
-    PersonsModule,
     ExchangeRatesModule,
     InvestmentsModule,
   ],

@@ -1,4 +1,4 @@
-import { IsNumber, IsISO8601, IsOptional, IsString, Min, Matches, IsUUID, IsBoolean } from 'class-validator';
+import { IsNumber, IsISO8601, IsOptional, IsString, Matches, IsUUID, IsBoolean } from 'class-validator';
 import { Transform } from 'class-transformer';
 
 export class CreateIncomeDto {
@@ -7,7 +7,6 @@ export class CreateIncomeDto {
 
   @IsNumber()
   @Transform(({ value }) => (typeof value === 'string' ? parseFloat(value) : value))
-  @Min(0.01)
   amount: number;
 
   @IsISO8601()
@@ -25,10 +24,6 @@ export class CreateIncomeDto {
   @IsOptional()
   @IsUUID()
   categoryId?: string;
-
-  @IsOptional()
-  @IsUUID()
-  personId?: string;
 
   @IsOptional()
   @IsBoolean()

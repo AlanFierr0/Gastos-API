@@ -11,7 +11,6 @@ export class ExpensesService {
   findAll(query: QueryExpenseDto) {
     const where: any = {};
     if (query.categoryId) where.categoryId = query.categoryId;
-    if (query.personId) where.personId = query.personId;
     if (query.dateFrom || query.dateTo) {
       where.date = {};
       if (query.dateFrom) where.date.gte = new Date(query.dateFrom);
@@ -22,7 +21,7 @@ export class ExpensesService {
       if (query.minAmount !== undefined) where.amount.gte = query.minAmount;
       if (query.maxAmount !== undefined) where.amount.lte = query.maxAmount;
     }
-    return this.prisma.expense.findMany({ orderBy: { date: 'desc' }, where, include: { category: true, person: true } });
+    return this.prisma.expense.findMany({ orderBy: { date: 'desc' }, where, include: { category: true } });
   }
 
   async findOne(id: string) {
@@ -44,25 +43,9 @@ export class ExpensesService {
       throw new NotFoundException('Category not found or not of type "expense"');
     }
     
-    // Si no se especifica persona, usar "Familiar" por defecto
-    let personId = dto.personId;
-    if (!personId) {
-      const familiar = await this.prisma.person.findUnique({ where: { name: 'Familiar' } });
-      if (familiar) {
-        personId = familiar.id;
-      } else {
-        // Si no existe "Familiar", crearla
-        const newFamiliar = await this.prisma.person.create({ data: { name: 'Familiar' } });
-        personId = newFamiliar.id;
-      }
-    } else {
-      const person = await this.prisma.person.findUnique({ where: { id: dto.personId } });
-      if (!person) throw new NotFoundException('Person not found');
-    }
-    
     return this.prisma.expense.create({
-      data: { categoryId: dto.categoryId, personId, amount: dto.amount, date: this.toUtcNoon(dto.date), notes: dto.notes, currency: dto.currency || 'ARS' },
-      include: { category: true, person: true },
+      data: { categoryId: dto.categoryId, amount: dto.amount, date: this.toUtcNoon(dto.date), notes: dto.notes, currency: dto.currency || 'ARS' },
+      include: { category: true },
     });
   }
 
@@ -74,21 +57,16 @@ export class ExpensesService {
         throw new NotFoundException('Category not found or not of type "expense"');
       }
     }
-    if (dto.personId) {
-      const person = await this.prisma.person.findUnique({ where: { id: dto.personId } });
-      if (!person) throw new NotFoundException('Person not found');
-    }
     return this.prisma.expense.update({
       where: { id },
       data: {
         categoryId: dto.categoryId,
-        personId: dto.personId,
         amount: dto.amount,
         date: dto.date ? this.toUtcNoon(dto.date) : undefined,
         notes: dto.notes,
         currency: dto.currency,
       },
-      include: { category: true, person: true },
+      include: { category: true },
     });
   }
 

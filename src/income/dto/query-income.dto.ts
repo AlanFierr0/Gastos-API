@@ -27,10 +27,6 @@ export class QueryIncomeDto {
   @IsOptional()
   @IsUUID()
   categoryId?: string;
-
-  @IsOptional()
-  @IsUUID()
-  personId?: string;
 }
 
 

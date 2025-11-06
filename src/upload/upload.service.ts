@@ -1,6 +1,6 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import * as XLSX from 'xlsx';
+import * as ExcelJS from 'exceljs';
 
 @Injectable()
 export class UploadService {
@@ -9,76 +9,6 @@ export class UploadService {
   
 
   constructor(private prisma: PrismaService) {}
-
-  async createPersons(personNames: string[]) {
-    const createdPersons = [];
-    
-    for (const personName of personNames) {
-      const person = await this.prisma.person.upsert({
-        where: { name: personName },
-        update: {},
-        create: { name: personName }
-      });
-      createdPersons.push(person);
-    }
-
-    return {
-      success: true,
-      message: `${createdPersons.length} personas procesadas`,
-      persons: createdPersons,
-    };
-  }
-
-  
-
-  private isSectionHeader(firstCell: string): boolean {
-    const cellLower = firstCell.toLowerCase().trim();
-    const sectionKeywords = ['alimentos', 'servicios', 'mantenimiento', 'transporte', 'salud', 
-                            'educacion', 'entretenimiento', 'vacaciones', 'inversiones', 'ingresos',
-                            'supermercado', 'expensas', 'luz', 'gas', 'internet', 'spotify',
-                            'netflix', 'hbo', 'directtv', 'seguro', 'nafta', 'patente', 'garage',
-                            'universidad', 'banco', 'galicia', 'frances', 'mercado', 'pago',
-                            'efectivo', 'dolares', 'pesos', 'intereses', 'ahorro', 'mes anterior',
-                            'vestimenta', 'regalos', 'salidas', 'cumples', 'deportes', 'salud',
-                            'conceptos', 'total', 'mesada'];
-    
-    return sectionKeywords.some(keyword => cellLower === keyword || cellLower.startsWith(keyword + ' '));
-  }
-
-  private isValidPersonName(name: string): boolean {
-    if (!name || name.trim() === '') return false;
-    
-    const nameLower = name.toLowerCase().trim();
-    
-    // Exclude currency abbreviations and symbols
-    const currencyPatterns = ['u$d', 'usd', 'eur', 'ars', 'brl', 'mxn', 'clp', 'uyu', 
-                              'u$s', 'dolares', 'dólares', 'pesos', 'euros', 'reales'];
-    if (currencyPatterns.some(pattern => nameLower === pattern || nameLower.includes(pattern))) {
-      return false;
-    }
-    
-    // Exclude common abbreviations and symbols
-    const invalidPatterns = ['$', '€', '£', '¥', 'u$', 'us$', 'total', 'subtotal', 
-                             'conceptos', 'mes', 'meses', 'año', 'años'];
-    if (invalidPatterns.some(pattern => nameLower.includes(pattern))) {
-      return false;
-    }
-    
-    // Exclude if it's too short (likely abbreviation) or too long (likely description)
-    if (name.length < 2 || name.length > 50) {
-      return false;
-    }
-    
-    // Exclude if it contains mostly numbers or special characters
-    const alphanumericRatio = (name.match(/[a-zA-ZáéíóúñÁÉÍÓÚÑ]/g) || []).length / name.length;
-    if (alphanumericRatio < 0.5) {
-      return false;
-    }
-    
-    // Exclude if it's mostly numbers
-    return !/^\d+$/.test(name.replace(/\s/g, ''));
-  }
-
   
 
   async parseExcel(file: Express.Multer.File) {
@@ -90,25 +20,50 @@ export class UploadService {
       throw new BadRequestException('File size exceeds 10MB limit');
     }
 
-    // Parse Excel file with cell styles to detect bold formatting
-    const workbook = XLSX.read(file.buffer, { 
-      type: 'buffer',
-      cellStyles: true,
-      cellHTML: false,
-      cellFormula: false,
-    });
+    // Parse Excel file with ExcelJS (better support for cell styles)
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(file.buffer as any);
 
-    const sheetName = workbook.SheetNames[0];
-    if (!sheetName) {
-      
+    if (workbook.worksheets.length === 0) {
       throw new BadRequestException('Excel file contains no sheets');
     }
 
-    
-    const worksheet = workbook.Sheets[sheetName];
+    const worksheet = workbook.worksheets[0];
     
     // Convert to array format to check for "Planilla gastos" format
-    const arrayData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' }) as any[][];
+    const arrayData: any[][] = [];
+    worksheet.eachRow((row, rowNumber) => {
+      const rowData: any[] = [];
+      row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+        let value: any = cell.value;
+        
+        // Handle different cell value types in ExcelJS
+        if (value === null || value === undefined) {
+          value = '';
+        } else if (typeof value === 'object') {
+          // ExcelJS can return objects for formulas, rich text, etc.
+          // Formula objects have 'result' property with the calculated value
+          if ('result' in value) {
+            value = value.result; // Formula result (this is the actual numeric/text value)
+          } else if ('text' in value) {
+            value = value.text;
+          } else if ('richText' in value) {
+            // Rich text: extract plain text
+            value = value.richText.map((rt: any) => rt.text || '').join('');
+          } else if ('value' in value) {
+            value = value.value;
+          } else {
+            // Try to extract numeric value if it's a number object
+            const numValue = Number(value);
+            value = !isNaN(numValue) ? numValue : String(value);
+          }
+        }
+        
+        // Ensure we have a proper value
+        rowData[colNumber - 1] = value;
+      });
+      arrayData[rowNumber - 1] = rowData;
+    });
     
     
     // Security: Limit number of rows
@@ -123,14 +78,18 @@ export class UploadService {
     }
     
     // Check if this is the "Planilla gastos" format (conceptos + meses)
-    
-    const isPlanillaFormat = this.detectPlanillaFormat(arrayData);
+    const isPlanillaFormat = this.detectPlanillaFormat(arrayData, worksheet);
     
     if (isPlanillaFormat) {
-      
       try {
         // Even if no records found, return the result (empty array is valid)
-        return await this.parsePlanillaFormat(arrayData, worksheet);
+        const result = await this.parsePlanillaFormat(arrayData, worksheet, workbook);
+        return {
+          records: result.records,
+          total: result.total,
+          errors: result.errors || [],
+          warnings: result.warnings || [],
+        };
       } catch (error) {
         // If parsing planilla format fails with BadRequestException, throw it
         if (error instanceof BadRequestException) {
@@ -139,14 +98,38 @@ export class UploadService {
         // For other errors, fall back to traditional format
         // Continue to traditional format parsing
       }
-    } else {
-      
     }
 
     // Traditional format: Convert to JSON with column names
+    const data: any[] = [];
+    const headers: string[] = [];
     
-    const data = XLSX.utils.sheet_to_json(worksheet);
+    // Get headers from first row
+    const firstRow = worksheet.getRow(1);
+    firstRow.eachCell({ includeEmpty: false }, (cell, colNumber) => {
+      headers[colNumber - 1] = String(cell.value || '');
+    });
     
+    // Convert rows to objects
+    worksheet.eachRow((row, rowNumber) => {
+      if (rowNumber === 1) return; // Skip header row
+      const rowData: any = {};
+      row.eachCell({ includeEmpty: false }, (cell, colNumber) => {
+        const header = headers[colNumber - 1];
+        if (header) {
+          let value: any = cell.value;
+          if (value && typeof value === 'object' && 'text' in value) {
+            value = value.text;
+          } else if (value && typeof value === 'object' && 'result' in value) {
+            value = value.result;
+          }
+          rowData[header] = value;
+        }
+      });
+      if (Object.keys(rowData).length > 0) {
+        data.push(rowData);
+      }
+    });
 
     if (data.length === 0) {
       
@@ -190,11 +173,9 @@ export class UploadService {
           date: date.toISOString(),
           notes: notes || undefined,
           currency,
-          person: this.sanitizeString(row['person'] || row['Person']) || undefined,
         });
       } else {
         const categoryName = this.sanitizeString(row['category'] || row['Category'] || row['categoria'] || row['Categoria']) || 'Uncategorized';
-        const personName = this.sanitizeString(row['person'] || row['Person']);
         parsedRecords.push({
           kind: 'expense',
           categoryName,
@@ -202,7 +183,6 @@ export class UploadService {
           date: date.toISOString(),
           notes: notes || undefined,
           currency,
-          person: personName || undefined,
         });
       }
     }
@@ -210,57 +190,28 @@ export class UploadService {
     return {
       records: parsedRecords,
       total: parsedRecords.length,
+      errors: [],
+      warnings: [],
     };
   }
 
-  async saveParsedRecords(records: any[]) {
-    
+  async saveParsedRecords(records: any[], parseErrors: any[] = [], parseWarnings: any[] = []) {
     const savedRecords = [] as any[];
+    const saveErrors: any[] = [];
+    const saveWarnings: any[] = [];
     
-    // Step 1: Recopilar todas las personas únicas del archivo
-    const uniquePersonNames = new Set<string>();
-    for (const record of records) {
-      if (record.person && typeof record.person === 'string' && record.person.trim() !== '') {
-        uniquePersonNames.add(record.person.trim());
-      }
-    }
-    
-    
-    
-    // Step 2: Crear todas las personas primero (si no existen) y obtener "Familiar"
-    const personMap = new Map<string, string>(); // name -> id
-    for (const personName of uniquePersonNames) {
-      const person = await this.prisma.person.upsert({
-        where: { name: personName },
-        update: {},
-        create: { name: personName }
-      });
-      personMap.set(personName, person.id);
-      
-    }
-    
-    // Obtener o crear la persona "Familiar" para gastos sin persona asignada
-    const familiarPerson = await this.prisma.person.upsert({
-      where: { name: 'Familiar' },
-      update: {},
-      create: { name: 'Familiar' }
-    });
-    const familiarPersonId = familiarPerson.id;
-    
-    // Step 3: Procesar los registros usando el mapa de personas
-    for (const record of records) {
+    // Process records
+    for (let i = 0; i < records.length; i++) {
+      const record = records[i];
+      try {
       if (record.kind === 'income') {
-        const personName = record.person;
-        const personId = personName ? personMap.get(personName) : undefined;
-        
         const created = await this.prisma.income.create({
           data: {
             source: record.source,
             amount: record.amount,
-            date: new Date(record.date),
+              date: this.normalizeDateToMonthYear(record.date),
             notes: record.notes,
             currency: record.currency,
-            personId,
           },
         });
         savedRecords.push({ kind: 'income', ...created });
@@ -277,37 +228,58 @@ export class UploadService {
           data: { name: record.categoryName, typeId: typeRow.id } 
         }));
         
-        const personName = record.person;
-        // Si no hay persona asignada, usar "Familiar" como defecto para gastos
-        const personId = personName ? personMap.get(personName) : familiarPersonId;
-        
         const created = await this.prisma.expense.create({
           data: {
             categoryId: category.id,
-            personId,
             amount: record.amount,
-            date: new Date(record.date),
+              date: this.normalizeDateToMonthYear(record.date),
             notes: record.notes,
             currency: record.currency,
           },
           include: { category: true },
         });
         savedRecords.push({ kind: 'expense', ...created });
+        }
+      } catch (error) {
+        saveErrors.push({
+          index: i,
+          record: {
+            kind: record.kind,
+            source: record.source,
+            categoryName: record.categoryName,
+            amount: record.amount,
+            date: record.date,
+            notes: record.notes,
+          },
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
 
+    const allErrors = [...parseErrors, ...saveErrors];
+    const allWarnings = [...parseWarnings, ...saveWarnings];
+    
+    let message = `${savedRecords.length} registros importados exitosamente`;
+    if (allErrors.length > 0) {
+      message += `. ${allErrors.length} error(es) durante el procesamiento.`;
+    }
+    if (allWarnings.length > 0) {
+      message += `. ${allWarnings.length} advertencia(s).`;
+    }
     
     return {
       success: true,
-      message: `${savedRecords.length} rows imported successfully`,
+      message,
       records: savedRecords,
+      errors: allErrors,
+      warnings: allWarnings,
     };
   }
 
   async parseAndSaveExcel(file: Express.Multer.File) {
     // Use parseExcel and saveParsedRecords
     const parsed = await this.parseExcel(file);
-    return this.saveParsedRecords(parsed.records);
+    return this.saveParsedRecords(parsed.records, parsed.errors || [], parsed.warnings || []);
   }
 
   private sanitizeString(value: any): string | null {
@@ -327,356 +299,671 @@ export class UploadService {
     if (!value) return null;
     try {
       const date = new Date(value);
-      return isNaN(date.getTime()) ? null : date;
+      if (isNaN(date.getTime())) return null;
+      // Normalize to first day of month (only month and year)
+      return new Date(Date.UTC(date.getFullYear(), date.getMonth(), 1, 12, 0, 0, 0));
     } catch {
       return null;
     }
   }
 
-  private detectPlanillaFormat(arrayData: any[][]): boolean {
-    
-    
-    // Look for a row with "Conceptos" in the first column
-    for (let i = 0; i < Math.min(50, arrayData.length); i++) {
+  // Helper function to normalize any date to first day of month (only month and year)
+  private normalizeDateToMonthYear(date: Date | string): Date {
+    const d = typeof date === 'string' ? new Date(date) : date;
+    return new Date(Date.UTC(d.getFullYear(), d.getMonth(), 1, 12, 0, 0, 0));
+  }
+
+  private detectPlanillaFormat(arrayData: any[][], worksheet: ExcelJS.Worksheet): boolean {
+    // Helper function to check if a cell is bold using ExcelJS
+    const isCellBold = (rowIndex: number, colIndex: number): boolean => {
+      try {
+        const row = worksheet.getRow(rowIndex + 1); // ExcelJS is 1-indexed
+        const cell = row.getCell(colIndex + 1); // ExcelJS is 1-indexed
+        if (cell && cell.font) {
+          return cell.font.bold === true;
+        }
+      } catch (e) {
+        // If we can't check bold, return false
+      }
+      return false;
+    };
+
+    const monthNames = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 
+                        'julio', 'agosto', 'setiembre', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+
+    // First pass: try to find "Conceptos" in bold in column A (index 0)
+    for (let i = 0; i < Math.min(100, arrayData.length); i++) {
       const row = arrayData[i];
       
-      // (skip debug sampling)
-      
       if (row && row[0] !== null && row[0] !== undefined && row[0] !== '') {
-        const firstCell = String(row[0]).trim().toLowerCase();
+        // Normalize: remove extra spaces, convert to lowercase, remove special characters that might interfere
+        const firstCell = String(row[0]).trim().toLowerCase().replace(/\s+/g, ' ');
         
-        
-        if (firstCell === 'conceptos') {
-          
+        // Check if it contains "conceptos" (more flexible matching)
+        if (firstCell.includes('conceptos')) {
+          const isBold = isCellBold(i, 0);
           
           // Check if this row has month names
-          const monthNames = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 
-                            'julio', 'agosto', 'setiembre', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
           let monthCount = 0;
-          const foundMonths = [];
           
           for (let j = 1; j < Math.min(row.length, 20); j++) {
             const cell = String(row[j] || '').trim().toLowerCase();
             if (monthNames.includes(cell)) {
               monthCount++;
-              foundMonths.push(cell);
-              
             }
           }
           
+          // Accept if we have at least 3 months (prefer bold, but accept non-bold too)
+          if (monthCount >= 3) {
+            // If it's bold, return immediately
+            if (isBold) {
+              return true;
+            }
+            // If not bold but has months, continue to check if there's a bold one later
+            // but for now, accept this as a valid match
+          }
+        }
+      }
+    }
+
+    // Second pass: if not found in bold, try without bold requirement (fallback)
+    for (let i = 0; i < Math.min(100, arrayData.length); i++) {
+      const row = arrayData[i];
+      
+      if (row && row[0] !== null && row[0] !== undefined && row[0] !== '') {
+        // Normalize: remove extra spaces, convert to lowercase
+        const firstCell = String(row[0]).trim().toLowerCase().replace(/\s+/g, ' ');
+        
+        // Check if it contains "conceptos" (more flexible matching)
+        if (firstCell.includes('conceptos')) {
+          // Check if this row has month names
+          let monthCount = 0;
           
+          for (let j = 1; j < Math.min(row.length, 20); j++) {
+            const cell = String(row[j] || '').trim().toLowerCase();
+            if (monthNames.includes(cell)) {
+              monthCount++;
+            }
+          }
           
-          return monthCount >= 3; // At least 3 months found
+          // Accept if we have at least 3 months
+          if (monthCount >= 3) {
+            return true;
+          }
         }
       }
     }
     
-    
     return false;
   }
 
-  private async parsePlanillaFormat(arrayData: any[][], worksheet: XLSX.WorkSheet): Promise<{ records: any[]; total: number }> {
-    
+  private async parsePlanillaFormat(arrayData: any[][], worksheet: ExcelJS.Worksheet): Promise<{ records: any[]; total: number; errors: any[]; warnings: any[] }> {
     const parsedRecords = [];
+    const errors: any[] = [];
+    const warnings: any[] = [];
     
-    // Get all existing persons from database for comparison
-    const existingPersons = await this.prisma.person.findMany({
-      select: { name: true }
-    });
-    
-    
-    // Get or create "Familiar" person for default assignment
-    const familiarPerson = await this.prisma.person.upsert({
-      where: { name: 'Familiar' },
-      update: {},
-      create: { name: 'Familiar' }
-    });
-    const familiarPersonName = familiarPerson.name;
-    
-    // Find the header row with "Conceptos"
+    // Helper function to check if a cell is bold using ExcelJS
+    // ExcelJS has much better support for reading cell styles
+    const isCellBold = (rowIndex: number, colIndex: number): boolean => {
+      try {
+        const row = worksheet.getRow(rowIndex + 1); // ExcelJS is 1-indexed
+        const cell = row.getCell(colIndex + 1); // ExcelJS is 1-indexed
+        if (cell && cell.font) {
+          return cell.font.bold === true;
+        }
+      } catch (e) {
+        // If we can't check bold, return false
+      }
+      return false;
+    };
+
+    // Step 1: Find "Conceptos" in column A (index 0) - prefer bold, but accept non-bold as fallback
     let headerRowIndex = -1;
     const monthNames = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 
                         'julio', 'agosto', 'setiembre', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
     const monthNumbers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 10, 11, 12]; // setiembre and septiembre both map to 9
     
-    
-    for (let i = 0; i < Math.min(50, arrayData.length); i++) {
+    // First pass: try to find "Conceptos" in bold in column A
+    for (let i = 0; i < Math.min(100, arrayData.length); i++) {
       const row = arrayData[i];
       if (row && row[0] !== null && row[0] !== undefined && row[0] !== '') {
-        const firstCell = String(row[0]).trim().toLowerCase();
-        if (firstCell === 'conceptos') {
+        // Normalize: remove extra spaces, convert to lowercase
+        const firstCell = String(row[0]).trim().toLowerCase().replace(/\s+/g, ' ');
+        // Check if it contains "conceptos" (more flexible matching)
+        if (firstCell.includes('conceptos') && isCellBold(i, 0)) {
+          // Verify it has months in the row
+          let monthCount = 0;
+          for (let j = 1; j < Math.min(row.length, 20); j++) {
+            const cell = String(row[j] || '').trim().toLowerCase();
+            if (monthNames.includes(cell)) {
+              monthCount++;
+            }
+          }
+          if (monthCount >= 3) {
+            headerRowIndex = i;
+            break;
+          }
+        }
+      }
+    }
+
+    // Second pass: if not found in bold, try without bold requirement
+    if (headerRowIndex === -1) {
+      for (let i = 0; i < Math.min(100, arrayData.length); i++) {
+      const row = arrayData[i];
+      if (row && row[0] !== null && row[0] !== undefined && row[0] !== '') {
+          // Normalize: remove extra spaces, convert to lowercase
+          const firstCell = String(row[0]).trim().toLowerCase().replace(/\s+/g, ' ');
+          // Check if it contains "conceptos" (more flexible matching)
+          if (firstCell.includes('conceptos')) {
+            // Verify it has months in the row
+            let monthCount = 0;
+            for (let j = 1; j < Math.min(row.length, 20); j++) {
+              const cell = String(row[j] || '').trim().toLowerCase();
+              if (monthNames.includes(cell)) {
+                monthCount++;
+              }
+            }
+            if (monthCount >= 3) {
           headerRowIndex = i;
-          
           break;
+            }
+          }
         }
       }
     }
 
     if (headerRowIndex === -1) {
-      
-      throw new BadRequestException('No se pudo encontrar la fila con "Conceptos". Verificá que tu archivo tenga una fila con "Conceptos" en la primera columna.');
+      // Try to provide helpful debugging info
+      let sampleCells = '';
+      for (let i = 0; i < Math.min(10, arrayData.length); i++) {
+        const row = arrayData[i];
+        if (row && row[0] !== null && row[0] !== undefined) {
+          sampleCells += `"${String(row[0])}", `;
+        }
+      }
+      throw new BadRequestException(`No se pudo encontrar la fila con "Conceptos" en la columna A (primera columna). Verificá que tu archivo tenga una fila con "Conceptos" en la primera columna, seguida de nombres de meses (Enero, Febrero, etc.). Primeras celdas encontradas en columna A: ${sampleCells}`);
     }
 
     const headerRow = arrayData[headerRowIndex];
     
-    
-    // Find year from first row or use current year
+    // Step 2: Find year from first row or use current year
     let year = new Date().getFullYear();
     if (arrayData[0] && arrayData[0][0] !== null && arrayData[0][0] !== undefined) {
       const firstCellValue = arrayData[0][0];
-      
       if (typeof firstCellValue === 'number') {
         const yearCandidate = firstCellValue;
         if (yearCandidate >= 2000 && yearCandidate <= 2100) {
           year = yearCandidate;
-          
         } 
       } 
     }
 
-    // Map month columns to their indices
+    // Step 3: Map month columns to their indices
     const monthColumnMap: { [key: number]: number } = {}; // month number -> column index
-    let personColumnIndex: number | null = null; // Column index for "Persona" or "Person"
-    
     
     for (let j = 1; j < headerRow.length; j++) {
       const cell = String(headerRow[j] || '').trim().toLowerCase();
-      
-      // Check if this is a person column
-      if (cell === 'persona' || cell === 'person' || cell === 'personas') {
-        personColumnIndex = j;
-        
-        continue;
-      }
-      
       // Check if this is a month
       const monthIndex = monthNames.indexOf(cell);
       if (monthIndex !== -1) {
         monthColumnMap[monthNumbers[monthIndex]] = j;
-        
       }
     }
-
     
     if (Object.keys(monthColumnMap).length === 0) {
-      
       throw new BadRequestException('No se pudieron encontrar las columnas de meses en la fila de encabezados. Verificá que la fila con "Conceptos" tenga nombres de meses (Enero, Febrero, etc.).');
     }
     
-    if (personColumnIndex !== null) {
-    }
-
-    // Helper function to check if a cell is bold
-    const isCellBold = (rowIndex: number, colIndex: number): boolean => {
-      const cellAddress = XLSX.utils.encode_cell({ r: rowIndex, c: colIndex });
-      const cell = worksheet[cellAddress];
-      if (cell && cell.s && cell.s.font) {
-        return cell.s.font.bold === true;
-      }
-      return false;
-    };
-
-    // Parse data rows starting after header row
-    
-    let rowsProcessed = 0;
-    let rowsWithValues = 0;
-    let sampleRowsLogged = 0;
-    
-    // Track current section (e.g., "Mesada", "Ingresos", etc.)
-    let currentSection: string | null = null;
-    const sectionNames = ['mesada', 'ingresos', 'gastos', 'alimentos', 'servicios', 'mantenimiento', 
-                          'transporte', 'salud', 'educacion', 'entretenimiento', 'vacaciones', 'inversiones'];
-    
-    // Track current person - no longer using bold detection since bold rows are separators
-    let currentPerson: string | null = null;
+    // Step 4: Parse data rows starting after header row
+    let currentCategory: string | null = null;
+    let lastItemName: string | null = null; // Track last item name for continuation rows
     
     for (let i = headerRowIndex + 1; i < Math.min(arrayData.length, headerRowIndex + 1000); i++) {
       const row = arrayData[i] as any[];
-      if (!row || !row[0] || typeof row[0] !== 'string') continue;
+      if (!row) continue;
       
-      rowsProcessed++;
-      let concept = this.sanitizeString(row[0]);
-      if (!concept || concept.trim() === '') continue;
-
-      // Extract text in parentheses and move to notes
-      let notes = '';
-      const parenthesesMatch = concept.match(/\(([^)]+)\)/);
-      if (parenthesesMatch) {
-        notes = parenthesesMatch[1].trim();
-        // Remove parentheses content from concept
-        concept = concept.replace(/\([^)]+\)/g, '').trim();
-        
+      // Check if row has any data in month columns (even if first cell is empty)
+      const hasMonthData = Object.values(monthColumnMap).some(colIndex => {
+        const monthValue = row[colIndex];
+        if (monthValue === null || monthValue === undefined) return false;
+        if (typeof monthValue === 'string' && monthValue.trim() === '') return false;
+        // Try to parse as number
+        let numValue: number;
+        if (typeof monthValue === 'object') {
+          if ('result' in monthValue) {
+            numValue = monthValue.result;
+          } else if ('value' in monthValue) {
+            numValue = monthValue.value;
+          } else {
+            numValue = Number(monthValue);
+          }
+        } else {
+          const strValue = String(monthValue).trim();
+          if (strValue === '') return false;
+          // Try to parse number from string
+          const cleaned = strValue.replace(/[$,\s]/g, '').replace(/\./g, '').replace(',', '.');
+          numValue = parseFloat(cleaned);
+        }
+        return !isNaN(numValue) && isFinite(numValue) && numValue !== 0;
+      });
+      
+      // Get first cell value
+      const firstCellRaw = row[0];
+      const firstCellValue = firstCellRaw ? this.sanitizeString(firstCellRaw) : null;
+      const hasFirstCell = firstCellValue && firstCellValue.trim() !== '';
+      
+      // DEBUG: Log all rows that might be categories (have text in first cell and are bold)
+      if (hasFirstCell) {
+        const isBoldCheck = isCellBold(i, 0);
+        const firstCellLower = firstCellValue.toLowerCase().trim();
+        if (firstCellLower.includes('deuda') || firstCellLower === 'deuda' || firstCellLower === 'deudas') {
+          console.log(`[DEBUG] Row ${i + 1}: Found potential "Deuda" - firstCell="${firstCellValue}", isBold=${isBoldCheck}`);
+        }
       }
-
-      const conceptLower = concept.toLowerCase().trim();
-
-      // Check if this row is "Total" - reset current person
-      if (conceptLower === 'total') {
-        
-        currentPerson = null;
+      
+      // Skip rows with no data at all
+      if (!hasFirstCell && !hasMonthData) {
         continue;
       }
 
-      // Check if this row is a section header
-      const isSection = sectionNames.some(section => conceptLower.includes(section));
+      // If first cell is empty but we have month data, use last item name
+      if (!hasFirstCell && hasMonthData && lastItemName) {
+        // Continue processing with last item name (this handles continuation rows)
+      } else if (!hasFirstCell) {
+        continue; // No first cell and no month data, skip
+      }
+
+      // Check if this row is a category:
+      // 1. First cell should be in bold (if detectable)
+      // 2. Must not have data in any month column
+      // 3. The next row should have data in month columns (indicating items below)
+      const isBold = isCellBold(i, 0);
       
-      if (isSection) {
-        currentSection = conceptLower;
-        currentPerson = null; // Reset person when entering new section
-        
-        continue; // Skip section header row
-      }
-
-      // Check if we've left the current section (empty row or new section)
-      if (currentSection && (conceptLower === '' || this.isSectionHeader(conceptLower))) {
-        currentSection = null;
-        currentPerson = null;
-      }
-
-      // Skip rows in bold - they are separators or account headers, not person names
-      if (isCellBold(i, 0)) {
-        
-        continue; // Skip separator/account header rows
-      }
-
-      // Determine category and person based on section and current person
-      let categoryName: string;
-      let personName: string | null = null;
-
-      // If we have a current person (from bold detection), use it
-      // But validate it's still a valid person name
-      if (currentPerson && this.isValidPersonName(currentPerson)) {
-        personName = currentPerson;
-        categoryName = concept;
-        
-      } else if (currentPerson && !this.isValidPersonName(currentPerson)) {
-        // Reset invalid person
-        currentPerson = null;
-        categoryName = concept;
-        personName = null;
-      }
-      // If we're in "Mesada" section, check if concept matches a person from database
-      else if (currentSection && currentSection.includes('mesada')) {
-        // Check if concept matches an existing person name in the database
-        const conceptLower = concept.toLowerCase().trim();
-        const matchingPerson = existingPersons.find(p => p.name.toLowerCase().trim() === conceptLower);
-        
-        if (matchingPerson) {
-          // Concept matches an existing person, assign to person and use "mesada" as category
-          personName = matchingPerson.name; // Use the exact name from DB (preserve capitalization)
-          categoryName = 'mesada';
-          
-        } else {
-          // Not a person, treat as category
-          categoryName = concept;
-          personName = null;
-        }
-      } 
-      // If we're in "Ingresos" section, check if concept matches a person from database
-      else if (currentSection && currentSection.includes('ingresos')) {
-        // Check if concept matches an existing person name in the database
-        const conceptLower = concept.toLowerCase().trim();
-        const matchingPerson = existingPersons.find(p => p.name.toLowerCase().trim() === conceptLower);
-        
-        if (matchingPerson) {
-          // Concept matches an existing person, assign to person and use "ingresos" as category
-          personName = matchingPerson.name; // Use the exact name from DB (preserve capitalization)
-          categoryName = 'ingresos';
-          
-        } else {
-          // It's a category, try to get person from column
-          categoryName = concept;
-          const personFromColumn = personColumnIndex !== null && row[personColumnIndex] 
-            ? this.sanitizeString(row[personColumnIndex]) 
-            : undefined;
-          // Check if person from column matches an existing person
-          if (personFromColumn) {
-            const personFromColumnLower = personFromColumn.toLowerCase().trim();
-            const matchingPersonFromColumn = existingPersons.find(p => p.name.toLowerCase().trim() === personFromColumnLower);
-            personName = matchingPersonFromColumn ? matchingPersonFromColumn.name : null;
-          }
-        }
-      }
-      // Default: check if concept is a person name from database
-      else {
-        // Check if the concept matches an existing person name in the database
-        const conceptLower = concept.toLowerCase().trim();
-        const matchingPerson = existingPersons.find(p => p.name.toLowerCase().trim() === conceptLower);
-        
-        if (matchingPerson) {
-          // Concept matches an existing person name, assign to person and use "unknown" as category
-          personName = matchingPerson.name; // Use the exact name from DB (preserve capitalization)
-          categoryName = 'unknown';
-          
-        } else {
-          // Concept is a category, try to get person from column
-          categoryName = concept;
-          const personFromColumn = personColumnIndex !== null && row[personColumnIndex] 
-            ? this.sanitizeString(row[personColumnIndex]) 
-            : undefined;
-          // Check if person from column matches an existing person
-          if (personFromColumn) {
-            const personFromColumnLower = personFromColumn.toLowerCase().trim();
-            const matchingPersonFromColumn = existingPersons.find(p => p.name.toLowerCase().trim() === personFromColumnLower);
-            personName = matchingPersonFromColumn ? matchingPersonFromColumn.name : undefined;
-          }
-        }
-      }
-
-      // Log first few rows to see what we're getting
-      if (sampleRowsLogged < 5) {
-        sampleRowsLogged++;
-      }
-
-      // Skip category headers (rows that are just category names without values)
-      // We'll process actual expense rows
-      let hasValueInRow = false;
-      for (const [monthStr, columnIndex] of Object.entries(monthColumnMap)) {
-        const month = parseInt(monthStr);
+      // Check if all month columns are empty (no data in any month)
+      // A value is considered "empty" if it's null, undefined, empty string, whitespace only, 0, or not a valid number
+      let allMonthsEmpty = true;
+      for (const [columnIndex] of Object.entries(monthColumnMap)) {
         const value = row[columnIndex];
         
-        // Check if value exists and is a valid number
-        const isNumber = typeof value === 'number' && !isNaN(value) && isFinite(value);
-        const isEmpty = value === null || value === undefined || value === '';
+        // Skip if value is null, undefined, or empty string
+        if (value === null || value === undefined || value === '') {
+          continue;
+        }
         
+        // Handle strings: check if it's just whitespace
+        if (typeof value === 'string' && value.trim() === '') {
+          continue; // It's just whitespace, treat as empty
+        }
         
+        // Handle ExcelJS objects
+        let processedValue = value;
+        if (typeof value === 'object' && value !== null) {
+          if ('result' in value) {
+            processedValue = value.result;
+          } else if ('value' in value) {
+            processedValue = value.value;
+          } else {
+            processedValue = Number(value);
+          }
+        }
         
-        if (!isEmpty && isNumber && value > 0) {
-          hasValueInRow = true;
-          // Create date for the first day of the month
-          const date = new Date(Date.UTC(year, month - 1, 1, 12, 0, 0));
+        // Try to convert to number
+        let numValue: number;
+        if (typeof processedValue === 'number') {
+          numValue = processedValue;
+        } else if (typeof processedValue === 'string') {
+          const cleaned = processedValue.trim()
+            .replace(/[$€£¥]/g, '')
+            .replace(/\s/g, '');
+          const hasDots = cleaned.includes('.');
+          const hasCommas = cleaned.includes(',');
           
-          // Determine if this is income or expense based on section
-          const kind = (currentSection && currentSection.includes('ingresos')) ? 'income' : 'expense';
-          
-          // If no person assigned, use "Familiar" as default
-          const assignedPerson = personName || familiarPersonName;
-          
-          parsedRecords.push({
-            kind,
-            categoryName,
-            amount: value,
-            date: date.toISOString(),
-            currency: 'ARS',
-            person: assignedPerson,
-            source: kind === 'income' ? categoryName : undefined,
-            notes: notes || undefined,
-          });
-          
-          
+          if (hasDots && hasCommas) {
+            const lastDot = cleaned.lastIndexOf('.');
+            const lastComma = cleaned.lastIndexOf(',');
+            numValue = lastDot > lastComma
+              ? parseFloat(cleaned.replace(/\./g, '').replace(',', '.'))
+              : parseFloat(cleaned.replace(/,/g, ''));
+          } else if (hasCommas) {
+            const commaCount = (cleaned.match(/,/g) || []).length;
+            numValue = commaCount > 1 
+              ? parseFloat(cleaned.replace(/,/g, ''))
+              : parseFloat(cleaned.replace(',', '.'));
+          } else if (hasDots) {
+            const dotCount = (cleaned.match(/\./g) || []).length;
+            numValue = dotCount > 1 
+              ? parseFloat(cleaned.replace(/\./g, ''))
+              : parseFloat(cleaned);
+          } else {
+            numValue = parseFloat(cleaned);
+          }
+        } else {
+          numValue = Number(processedValue);
+        }
+        
+        const isNumber = typeof numValue === 'number' && !isNaN(numValue) && isFinite(numValue);
+        
+        // If it's a valid number and not zero, then this month has data
+        if (isNumber && numValue !== 0) {
+          allMonthsEmpty = false;
+          break;
+        }
+      }
+
+      // A row is a category ONLY if:
+      // 1. It's in bold (required)
+      // 2. It has no data in any month column
+      // We only use bold detection, no fallback to avoid false positives
+      
+      // DEBUG: Log if we find "Deuda" to see why it's not being detected
+      if (firstCellValue) {
+        const firstCellLower = firstCellValue.toLowerCase().trim();
+        if (firstCellLower.includes('deuda') || firstCellLower === 'deuda' || firstCellLower === 'deudas') {
+          console.log(`[DEBUG] Row ${i + 1}: Checking "Deuda" - isBold=${isBold}, allMonthsEmpty=${allMonthsEmpty}, firstCell="${firstCellValue}"`);
+          // Log all month values for this row
+          for (const [monthStr, columnIndex] of Object.entries(monthColumnMap)) {
+            const value = row[columnIndex];
+            if (value !== null && value !== undefined && value !== '') {
+              console.log(`  Month ${monthStr} (col ${columnIndex}): value=${value}, type=${typeof value}`);
+            }
+          }
+          if (isBold && allMonthsEmpty) {
+            console.log(`[DEBUG] ✅ "Deuda" detected as category!`);
+          } else if (!isBold) {
+            console.log(`[DEBUG] ❌ "Deuda" NOT detected: not bold`);
+          } else if (!allMonthsEmpty) {
+            console.log(`[DEBUG] ❌ "Deuda" NOT detected: has data in months`);
+          }
         }
       }
       
-      if (hasValueInRow) {
-        rowsWithValues++;
+      if (isBold && allMonthsEmpty) {
+        currentCategory = firstCellValue.trim();
+        console.log(`[DEBUG] Category detected: "${currentCategory}" at row ${i + 1}`);
+        continue; // Skip the category row itself, we'll process items below it
+      }
+
+      // If not a category, it's an item belonging to the current category
+      if (!currentCategory) {
+        continue; // Skip items without a category
+      }
+
+      // Use first cell value if available, otherwise use last item name
+      let itemName = hasFirstCell ? firstCellValue.trim() : (lastItemName || '');
+      if (!itemName) {
+        continue; // Skip if no item name available
+      }
+      
+      // Update last item name if we have a new first cell value
+      if (hasFirstCell) {
+        lastItemName = itemName;
+      }
+
+      // Extract text in parentheses and remove from itemName
+      let textInParentheses = '';
+      const parenthesesMatch = itemName.match(/\(([^)]+)\)/);
+      if (parenthesesMatch) {
+        textInParentheses = parenthesesMatch[1].trim();
+        // Remove the parentheses and their content from itemName
+        itemName = itemName.replace(/\s*\([^)]+\)\s*/g, '').trim();
+      }
+
+      // Process each month column for this item
+      for (const [monthStr, columnIndex] of Object.entries(monthColumnMap)) {
+        const month = parseInt(monthStr);
+        const rawValue = row[columnIndex];
+        
+        // Get the cell directly from ExcelJS to access formatted text (which preserves negative sign)
+        let cellText: string | null = null;
+        try {
+          const excelRow = worksheet.getRow(i + 1); // ExcelJS is 1-indexed
+          const excelCell = excelRow.getCell(columnIndex + 1); // ExcelJS is 1-indexed
+          // Try to get the formatted text value first (this preserves the visual format including negative sign)
+          if (excelCell && excelCell.text !== undefined && excelCell.text !== null && excelCell.text !== '') {
+            cellText = String(excelCell.text).trim();
+          }
+        } catch (e) {
+          // If we can't read the cell, fall back to rawValue
+        }
+        
+        // Parse value - handle numbers, strings, and ExcelJS objects
+        let value: number | null = null;
+        
+        // Check for empty/null/undefined values
+        if (rawValue === null || rawValue === undefined) {
+          continue; // Skip empty values
+        }
+        
+        // Check for empty strings (including whitespace-only)
+        if (typeof rawValue === 'string' && rawValue.trim() === '') {
+          continue; // Skip empty strings
+        }
+        
+        // Priority 1: If rawValue is already a number (negative or positive), use it directly
+        // This preserves the sign that ExcelJS already detected
+        if (typeof rawValue === 'number' && !isNaN(rawValue) && isFinite(rawValue)) {
+          value = rawValue; // Use the number directly, preserving sign
+        } else {
+          // Handle ExcelJS value objects and strings
+          let processedValue: any = rawValue;
+          let originalStringValue: string | null = null;
+          
+          // If we have cellText (formatted text from Excel), use it to preserve negative sign
+          if (cellText !== null && cellText !== '') {
+            originalStringValue = cellText;
+            processedValue = cellText; // Process as string to detect negative sign
+          } else if (typeof rawValue === 'object') {
+            // ExcelJS can return objects - extract the actual value
+            if ('result' in rawValue) {
+              processedValue = rawValue.result;
+              // If result is a number, use it directly
+              if (typeof processedValue === 'number' && !isNaN(processedValue) && isFinite(processedValue)) {
+                value = processedValue;
+                continue; // Skip to next iteration
+              }
+            } else if ('text' in rawValue) {
+              processedValue = rawValue.text;
+              originalStringValue = String(rawValue.text);
+            } else if ('value' in rawValue) {
+              processedValue = rawValue.value;
+              // If value is a number, use it directly
+              if (typeof processedValue === 'number' && !isNaN(processedValue) && isFinite(processedValue)) {
+                value = processedValue;
+                continue; // Skip to next iteration
+              }
+            } else {
+              // Try to convert the object to a number
+              const numValue = Number(rawValue);
+              if (!isNaN(numValue) && isFinite(numValue)) {
+                value = numValue;
+                continue; // Skip to next iteration
+              }
+              processedValue = String(rawValue);
+              if (typeof processedValue === 'string') {
+                originalStringValue = processedValue;
+              }
+            }
+          } else if (typeof rawValue === 'string') {
+            originalStringValue = rawValue;
+          }
+          
+          // Process as string if we haven't set value yet
+          if ((typeof processedValue === 'string' || originalStringValue !== null)) {
+            // Use original string value if available, otherwise use processedValue
+            const stringToProcess = originalStringValue || String(processedValue);
+            let cleanedValue = stringToProcess.trim();
+            
+            // Check if the value contains "-" (negative sign) before any digits
+            // This handles cases like: "-1234", "- 1234", "-$1234", etc.
+            // Look for "-" at the start (possibly after spaces/currency symbols)
+            // Also handle parentheses format used in accounting: "(1234.56)" means negative
+            const hasLeadingNegative = /^[\s$€£¥]*-/.test(cleanedValue);
+            const hasParenthesesFormat = /^\([^)]+\)$/.test(cleanedValue);
+            const isNegative = hasLeadingNegative || hasParenthesesFormat;
+            
+            // Remove negative sign and any leading currency symbols/spaces temporarily for processing
+            if (isNegative) {
+              // Remove parentheses format first (e.g., "(1234.56)" -> "1234.56")
+              if (hasParenthesesFormat) {
+                cleanedValue = cleanedValue.replace(/^\(|\)$/g, '');
+              }
+              // Remove the negative sign and any leading symbols/spaces
+              if (hasLeadingNegative) {
+                cleanedValue = cleanedValue.replace(/^[\s$€£¥]*-/, '').trim();
+              }
+            }
+            
+            // Remove currency symbols (in case they appear elsewhere)
+            cleanedValue = cleanedValue.replace(/[$€£¥]/g, '');
+            
+            // Remove spaces
+            cleanedValue = cleanedValue.replace(/\s/g, '');
+            
+            // Check if it uses dot as thousands separator and comma as decimal (e.g., "1.234,56")
+            // or comma as thousands and dot as decimal (e.g., "1,234.56")
+            const hasDots = cleanedValue.includes('.');
+            const hasCommas = cleanedValue.includes(',');
+            
+            if (hasDots && hasCommas) {
+              // Determine which separator is used for thousands
+              // The one that appears last is the decimal separator
+              const lastDotIndex = cleanedValue.lastIndexOf('.');
+              const lastCommaIndex = cleanedValue.lastIndexOf(',');
+              
+              if (lastDotIndex > lastCommaIndex) {
+                // Format: "1,234.56" or "1,234,567.89" (comma=thousands, dot=decimal)
+                // The dot is the decimal separator (appears last)
+                // Remove all commas (thousands), keep dot as decimal
+                cleanedValue = cleanedValue.replace(/,/g, '');
+              } else {
+                // Format: "1.234,56" or "1.234.567,89" (dot=thousands, comma=decimal)
+                // The comma is the decimal separator (appears last)
+                // Remove all dots (thousands) and replace comma with dot (decimal)
+                cleanedValue = cleanedValue.replace(/\./g, '').replace(',', '.');
+              }
+            } else if (hasCommas && !hasDots) {
+              // Only commas: could be decimal separator or thousands
+              // If more than one comma, likely thousands separator
+              const commaCount = (cleanedValue.match(/,/g) || []).length;
+              if (commaCount > 1) {
+                // Thousands separator: "1,234,567"
+                cleanedValue = cleanedValue.replace(/,/g, '');
+              } else {
+                // Probably decimal separator: "1234,56"
+                cleanedValue = cleanedValue.replace(',', '.');
+              }
+            } else if (hasDots && !hasCommas) {
+              // Only dots: could be decimal separator or thousands
+              // If more than one dot, likely thousands separator
+              const dotCount = (cleanedValue.match(/\./g) || []).length;
+              if (dotCount > 1) {
+                // Thousands separator: "1.234.567"
+                cleanedValue = cleanedValue.replace(/\./g, '');
+              }
+              // If single dot, assume decimal separator
+            }
+            
+            const parsed = parseFloat(cleanedValue);
+            if (!isNaN(parsed) && isFinite(parsed)) {
+              // Apply negative sign if the original value started with "-" or was in parentheses
+              value = isNegative ? -Math.abs(parsed) : parsed;
+            }
+          }
+        }
+        
+        // Only process if we have a valid number (including zero, as zero might be a valid expense in some cases)
+        // But skip if it's exactly zero to avoid noise
+        if (value !== null && value !== 0) {
+          try {
+            // Create date for the first day of the month (only month and year, day always 1)
+            // Use UTC to avoid timezone issues
+            const date = new Date(Date.UTC(year, month - 1, 1, 12, 0, 0, 0));
+            
+            // Validate date
+            if (isNaN(date.getTime())) {
+              warnings.push({
+                row: i + 1,
+                item: itemName,
+                category: currentCategory,
+                month: month,
+                year: year,
+                value: rawValue,
+                reason: `Fecha inválida: mes ${month}, año ${year}`,
+              });
+              continue;
+            }
+            
+            // Determine if this is income or expense based on category name
+            // Only categories containing "ingreso" are considered income
+            // "mesada" and all other categories are expenses
+            const categoryLower = currentCategory.toLowerCase();
+            const isIncome = categoryLower.includes('ingreso');
+            const kind = isIncome ? 'income' : 'expense';
+            
+            // For income: use category name as source, and itemName as notes
+            // For expense: use category name as categoryName, and itemName as notes
+            if (kind === 'income') {
+              // Income: source is the category (e.g., "Mesada"), notes is the item name (e.g., "Alan", "Vestimenta")
+              let notes = itemName;
+              if (textInParentheses) {
+                notes = notes ? `${itemName} (${textInParentheses})` : `(${textInParentheses})`;
+              }
+            parsedRecords.push({
+              kind: 'income',
+              source: currentCategory, // Use category name as source (e.g., "Mesada")
+              amount: value, // Ensure this preserves negative sign
+              date: date.toISOString(), // ISO format: YYYY-MM-DDTHH:mm:ss.sssZ
+              currency: 'ARS',
+              notes: notes || undefined, // Use item name as notes (e.g., "Alan", "Vestimenta")
+            });
+          } else {
+            // For expenses, combine itemName and textInParentheses in notes (only once each)
+            let notes = itemName;
+            if (textInParentheses) {
+              notes = notes ? `${itemName} (${textInParentheses})` : `(${textInParentheses})`;
+            }
+            parsedRecords.push({
+              kind: 'expense',
+              categoryName: currentCategory.toLowerCase(),
+              amount: value, // Ensure this preserves negative sign
+              date: date.toISOString(), // ISO format: YYYY-MM-DDTHH:mm:ss.sssZ
+              currency: 'ARS',
+              notes: notes || undefined,
+            });
+          }
+          } catch (error) {
+            errors.push({
+              row: i + 1,
+              item: itemName,
+              category: currentCategory,
+              month: month,
+              year: year,
+              value: rawValue,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        } else if (rawValue !== '') {
+          // Value exists but couldn't be parsed - add warning
+          warnings.push({
+            row: i + 1,
+            item: itemName,
+            category: currentCategory,
+            month: month,
+            year: year,
+            value: rawValue,
+            reason: 'No se pudo convertir a número válido',
+          });
+        }
       }
     }
-
-    
 
     return {
       records: parsedRecords,
       total: parsedRecords.length,
+      errors,
+      warnings,
     };
   }
 }
+

@@ -26,9 +26,4 @@ export class AnalyticsController {
   getSummary(@Query('currency') currency?: string) {
     return this.analyticsService.getSummary(currency?.toUpperCase());
   }
-
-  @Get('by-person')
-  getByPerson(@Query('currency') currency?: string) {
-    return this.analyticsService.getExpensesByPerson(currency?.toUpperCase());
-  }
 }

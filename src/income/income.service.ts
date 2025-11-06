@@ -24,12 +24,11 @@ export class IncomeService {
       if (query.maxAmount !== undefined) where.amount.lte = query.maxAmount;
     }
     if (query.categoryId) where.categoryId = query.categoryId;
-    if (query.personId) where.personId = query.personId;
-    return this.prisma.income.findMany({ orderBy: { date: 'desc' }, where, include: { category: true, person: true } });
+    return this.prisma.income.findMany({ orderBy: { date: 'desc' }, where, include: { category: true } });
   }
 
   async findOne(id: string) {
-    const income = await this.prisma.income.findUnique({ where: { id }, include: { category: true, person: true } });
+    const income = await this.prisma.income.findUnique({ where: { id }, include: { category: true } });
     if (!income) throw new NotFoundException('Income not found');
     return income;
   }
@@ -47,10 +46,6 @@ export class IncomeService {
         throw new NotFoundException('Category not found or not of type "income"');
       }
     }
-    if (dto.personId) {
-      const person = await this.prisma.person.findUnique({ where: { id: dto.personId } });
-      if (!person) throw new NotFoundException('Person not found');
-    }
     return this.prisma.income.create({
       data: {
         source: dto.source,
@@ -59,10 +54,9 @@ export class IncomeService {
         notes: dto.notes,
         currency: dto.currency || 'ARS',
         categoryId: dto.categoryId,
-        personId: dto.personId,
         isRecurring: dto.isRecurring ?? false,
       },
-      include: { category: true, person: true },
+      include: { category: true },
     });
   }
 
@@ -74,10 +68,6 @@ export class IncomeService {
         throw new NotFoundException('Category not found or not of type "income"');
       }
     }
-    if (dto.personId) {
-      const person = await this.prisma.person.findUnique({ where: { id: dto.personId } });
-      if (!person) throw new NotFoundException('Person not found');
-    }
     return this.prisma.income.update({
       where: { id },
       data: {
@@ -87,10 +77,9 @@ export class IncomeService {
         notes: dto.notes,
         currency: dto.currency,
         categoryId: dto.categoryId,
-        personId: dto.personId,
         isRecurring: dto.isRecurring,
       },
-      include: { category: true, person: true },
+      include: { category: true },
     });
   }
 
