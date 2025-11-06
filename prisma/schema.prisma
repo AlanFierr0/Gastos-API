@@ -85,3 +85,15 @@ model Investment {
   @@index([type])
   @@index([date])
 }
+
+model FinancialAnalysisConfig {
+  id             String   @id @default("default")
+  fixed          Json     @default("[]") // Array de nombres de categorías en minúsculas
+  wellbeing      Json     @default("[]")
+  saving         Json     @default("[]")
+  targetFixed    Float    @default(50)
+  targetWellbeing Float   @default(30)
+  targetSaving   Float    @default(20)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
