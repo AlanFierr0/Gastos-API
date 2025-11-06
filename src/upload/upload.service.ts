@@ -83,7 +83,7 @@ export class UploadService {
     if (isPlanillaFormat) {
       try {
         // Even if no records found, return the result (empty array is valid)
-        const result = await this.parsePlanillaFormat(arrayData, worksheet, workbook);
+        const result = await this.parsePlanillaFormat(arrayData, worksheet);
         return {
           records: result.records,
           total: result.total,
@@ -158,30 +158,33 @@ export class UploadService {
       const type = (this.sanitizeString(row['type'] || row['Type']) || '').toLowerCase();
       const amount = this.parseNumber(row['amount'] || row['monto'] || row['Monto']);
       const date = this.parseDate(row['date'] || row['fecha'] || row['Fecha']);
-      const notes = this.sanitizeString(row['notes'] || row['descripcion'] || row['Descripcion']);
+      const categoria = this.sanitizeString(row['categoria'] || row['category'] || row['Categoria'] || row['Category']);
+      const nombre = this.sanitizeString(row['nombre'] || row['Nombre']);
+      const nota = this.sanitizeString(row['nota'] || row['Nota'] || row['notes'] || row['descripcion'] || row['Descripcion']) || '';
 
       if (amount === null || !date) continue;
 
       const currency = (this.sanitizeString(row['currency'] || row['Currency']) || 'ARS').toUpperCase();
       
       if (type === 'income' || row['source'] || row['Source']) {
-        const source = this.sanitizeString(row['source'] || row['Source'] || 'Income') || 'Income';
+        const fallbackSource = this.sanitizeString(row['source'] || row['Source'] || 'Ingreso') || 'Ingreso';
         parsedRecords.push({
           kind: 'income',
-          source,
+          categoria: categoria || fallbackSource,
+          nombre: nombre || 'Ingreso',
+          nota,
           amount,
           date: date.toISOString(),
-          notes: notes || undefined,
           currency,
         });
       } else {
-        const categoryName = this.sanitizeString(row['category'] || row['Category'] || row['categoria'] || row['Categoria']) || 'Uncategorized';
         parsedRecords.push({
           kind: 'expense',
-          categoryName,
+          categoria: categoria || 'Sin categoría',
+          nombre: nombre || 'Gasto',
+          nota,
           amount,
           date: date.toISOString(),
-          notes: notes || undefined,
           currency,
         });
       }
@@ -207,10 +210,10 @@ export class UploadService {
       if (record.kind === 'income') {
         const created = await this.prisma.income.create({
           data: {
-            source: record.source,
+            source: record.categoria, // usar categoria como fuente
             amount: record.amount,
-              date: this.normalizeDateToMonthYear(record.date),
-            notes: record.notes,
+            date: this.normalizeDateToMonthYear(record.date),
+            notes: record.nota,
             currency: record.currency,
           },
         });
@@ -222,18 +225,19 @@ export class UploadService {
           create: { name: 'expense' } 
         });
         const existingCategory = await this.prisma.category.findFirst({ 
-          where: { name: record.categoryName } 
+          where: { name: record.categoria || record.categoryName } 
         });
         const category = existingCategory || (await this.prisma.category.create({ 
-          data: { name: record.categoryName, typeId: typeRow.id } 
+          data: { name: (record.categoria || record.categoryName), typeId: typeRow.id } 
         }));
         
         const created = await this.prisma.expense.create({
           data: {
             categoryId: category.id,
+            name: record.nombre || 'Gasto',
             amount: record.amount,
-              date: this.normalizeDateToMonthYear(record.date),
-            notes: record.notes,
+            date: this.normalizeDateToMonthYear(record.date),
+            notes: record.nota ?? record.notes,
             currency: record.currency,
           },
           include: { category: true },
@@ -553,15 +557,6 @@ export class UploadService {
       const firstCellValue = firstCellRaw ? this.sanitizeString(firstCellRaw) : null;
       const hasFirstCell = firstCellValue && firstCellValue.trim() !== '';
       
-      // DEBUG: Log all rows that might be categories (have text in first cell and are bold)
-      if (hasFirstCell) {
-        const isBoldCheck = isCellBold(i, 0);
-        const firstCellLower = firstCellValue.toLowerCase().trim();
-        if (firstCellLower.includes('deuda') || firstCellLower === 'deuda' || firstCellLower === 'deudas') {
-          console.log(`[DEBUG] Row ${i + 1}: Found potential "Deuda" - firstCell="${firstCellValue}", isBold=${isBoldCheck}`);
-        }
-      }
-      
       // Skip rows with no data at all
       if (!hasFirstCell && !hasMonthData) {
         continue;
@@ -656,31 +651,8 @@ export class UploadService {
       // 2. It has no data in any month column
       // We only use bold detection, no fallback to avoid false positives
       
-      // DEBUG: Log if we find "Deuda" to see why it's not being detected
-      if (firstCellValue) {
-        const firstCellLower = firstCellValue.toLowerCase().trim();
-        if (firstCellLower.includes('deuda') || firstCellLower === 'deuda' || firstCellLower === 'deudas') {
-          console.log(`[DEBUG] Row ${i + 1}: Checking "Deuda" - isBold=${isBold}, allMonthsEmpty=${allMonthsEmpty}, firstCell="${firstCellValue}"`);
-          // Log all month values for this row
-          for (const [monthStr, columnIndex] of Object.entries(monthColumnMap)) {
-            const value = row[columnIndex];
-            if (value !== null && value !== undefined && value !== '') {
-              console.log(`  Month ${monthStr} (col ${columnIndex}): value=${value}, type=${typeof value}`);
-            }
-          }
-          if (isBold && allMonthsEmpty) {
-            console.log(`[DEBUG] ✅ "Deuda" detected as category!`);
-          } else if (!isBold) {
-            console.log(`[DEBUG] ❌ "Deuda" NOT detected: not bold`);
-          } else if (!allMonthsEmpty) {
-            console.log(`[DEBUG] ❌ "Deuda" NOT detected: has data in months`);
-          }
-        }
-      }
-      
       if (isBold && allMonthsEmpty) {
         currentCategory = firstCellValue.trim();
-        console.log(`[DEBUG] Category detected: "${currentCategory}" at row ${i + 1}`);
         continue; // Skip the category row itself, we'll process items below it
       }
 
@@ -700,14 +672,8 @@ export class UploadService {
         lastItemName = itemName;
       }
 
-      // Extract text in parentheses and remove from itemName
-      let textInParentheses = '';
-      const parenthesesMatch = itemName.match(/\(([^)]+)\)/);
-      if (parenthesesMatch) {
-        textInParentheses = parenthesesMatch[1].trim();
-        // Remove the parentheses and their content from itemName
-        itemName = itemName.replace(/\s*\([^)]+\)\s*/g, '').trim();
-      }
+      // Remove text in parentheses from itemName (ignore it completely)
+      itemName = itemName.replace(/\s*\([^)]+\)\s*/g, '').trim();
 
       // Process each month column for this item
       for (const [monthStr, columnIndex] of Object.entries(monthColumnMap)) {
@@ -904,34 +870,28 @@ export class UploadService {
             // For income: use category name as source, and itemName as notes
             // For expense: use category name as categoryName, and itemName as notes
             if (kind === 'income') {
-              // Income: source is the category (e.g., "Mesada"), notes is the item name (e.g., "Alan", "Vestimenta")
-              let notes = itemName;
-              if (textInParentheses) {
-                notes = notes ? `${itemName} (${textInParentheses})` : `(${textInParentheses})`;
-              }
-            parsedRecords.push({
-              kind: 'income',
-              source: currentCategory, // Use category name as source (e.g., "Mesada")
-              amount: value, // Ensure this preserves negative sign
-              date: date.toISOString(), // ISO format: YYYY-MM-DDTHH:mm:ss.sssZ
-              currency: 'ARS',
-              notes: notes || undefined, // Use item name as notes (e.g., "Alan", "Vestimenta")
-            });
-          } else {
-            // For expenses, combine itemName and textInParentheses in notes (only once each)
-            let notes = itemName;
-            if (textInParentheses) {
-              notes = notes ? `${itemName} (${textInParentheses})` : `(${textInParentheses})`;
+              // Ingresos: categoria = nombre de la categoría (p.ej. "Mesada"), nombre = item (p.ej. "Alan"), nota vacía (se ignoran paréntesis)
+              parsedRecords.push({
+                kind: 'income',
+                categoria: currentCategory,
+                nombre: itemName,
+                nota: '',
+                amount: value,
+                date: date.toISOString(),
+                currency: 'ARS',
+              });
+            } else {
+              // Gastos: categoria = categoría, nombre = item, nota vacía (se ignoran paréntesis)
+              parsedRecords.push({
+                kind: 'expense',
+                categoria: currentCategory.toLowerCase(),
+                nombre: itemName,
+                nota: '',
+                amount: value,
+                date: date.toISOString(),
+                currency: 'ARS',
+              });
             }
-            parsedRecords.push({
-              kind: 'expense',
-              categoryName: currentCategory.toLowerCase(),
-              amount: value, // Ensure this preserves negative sign
-              date: date.toISOString(), // ISO format: YYYY-MM-DDTHH:mm:ss.sssZ
-              currency: 'ARS',
-              notes: notes || undefined,
-            });
-          }
           } catch (error) {
             errors.push({
               row: i + 1,

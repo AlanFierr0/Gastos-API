@@ -7,6 +7,10 @@ export class UpdateExpenseDto {
   categoryId?: string;
 
   @IsOptional()
+  @IsString()
+  name?: string;
+
+  @IsOptional()
   @IsNumber()
   @Transform(({ value }) => (typeof value === 'string' ? parseFloat(value) : value))
   amount?: number;

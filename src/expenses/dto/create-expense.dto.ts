@@ -5,6 +5,9 @@ export class CreateExpenseDto {
   @IsUUID()
   categoryId: string;
 
+  @IsString()
+  name: string;
+
   @IsNumber()
   @Transform(({ value }) => (typeof value === 'string' ? parseFloat(value) : value))
   amount: number;

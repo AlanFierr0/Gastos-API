@@ -44,7 +44,7 @@ export class ExpensesService {
     }
     
     return this.prisma.expense.create({
-      data: { categoryId: dto.categoryId, amount: dto.amount, date: this.toUtcNoon(dto.date), notes: dto.notes, currency: dto.currency || 'ARS' },
+      data: { categoryId: dto.categoryId, name: dto.name, amount: dto.amount, date: this.toUtcNoon(dto.date), notes: dto.notes, currency: dto.currency || 'ARS' },
       include: { category: true },
     });
   }
@@ -61,6 +61,7 @@ export class ExpensesService {
       where: { id },
       data: {
         categoryId: dto.categoryId,
+        name: dto.name,
         amount: dto.amount,
         date: dto.date ? this.toUtcNoon(dto.date) : undefined,
         notes: dto.notes,

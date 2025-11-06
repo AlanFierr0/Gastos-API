@@ -1,8 +1,11 @@
-import { IsString, IsNumber, IsOptional, IsDateString } from 'class-validator';
+import { IsString, IsNumber, IsDateString } from 'class-validator';
 
 export class CreateRecordDto {
   @IsString()
-  concepto: string;
+  categoria: string;
+
+  @IsString()
+  nombre: string;
 
   @IsNumber()
   monto: number;
@@ -11,10 +14,5 @@ export class CreateRecordDto {
   fecha: string;
 
   @IsString()
-  @IsOptional()
-  categoria?: string;
-
-  @IsString()
-  @IsOptional()
-  descripcion?: string;
+  nota: string;
 }

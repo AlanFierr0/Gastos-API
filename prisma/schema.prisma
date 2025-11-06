@@ -31,6 +31,7 @@ model Category {
 model Expense {
   id         String   @id @default(uuid())
   categoryId String
+  name       String?  // nombre agrupable (opcional para compatibilidad con datos existentes)
   amount     Float
   date       DateTime
   notes      String?
