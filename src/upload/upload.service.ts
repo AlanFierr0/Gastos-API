@@ -11,7 +11,7 @@ export class UploadService {
   constructor(private prisma: PrismaService) {}
   
 
-  async parseExcel(file: Express.Multer.File) {
+  async parseExcel(file: Express.Multer.File, defaultYear?: number) {
     
     
     // Security: Check file size
@@ -157,7 +157,34 @@ export class UploadService {
     for (const row of data) {
       const type = (this.sanitizeString(row['type'] || row['Type']) || '').toLowerCase();
       const amount = this.parseNumber(row['amount'] || row['monto'] || row['Monto']);
-      const date = this.parseDate(row['date'] || row['fecha'] || row['Fecha']);
+      let date = this.parseDate(row['date'] || row['fecha'] || row['Fecha']);
+      
+      // If we have a default year, always use it for the date
+      if (defaultYear) {
+        if (date) {
+          // Replace the year with the selected year, keeping month and day
+          date = new Date(Date.UTC(defaultYear, date.getUTCMonth(), date.getUTCDate(), 12, 0, 0, 0));
+        } else {
+          // If date is invalid, try to extract month from the date field
+          const dateValue = row['date'] || row['fecha'] || row['Fecha'];
+          if (dateValue) {
+            // Try to parse as month number (1-12) or month name
+            const monthStr = String(dateValue).trim();
+            const monthMatch = monthStr.match(/(\d{1,2})/);
+            if (monthMatch) {
+              const month = parseInt(monthMatch[1], 10);
+              if (month >= 1 && month <= 12) {
+                date = new Date(Date.UTC(defaultYear, month - 1, 1, 12, 0, 0, 0));
+              }
+            }
+          }
+          // If still no date, use January of the default year
+          if (!date) {
+            date = new Date(Date.UTC(defaultYear, 0, 1, 12, 0, 0, 0));
+          }
+        }
+      }
+      
       const categoria = this.sanitizeString(row['categoria'] || row['category'] || row['Categoria'] || row['Category']);
       const nombre = this.sanitizeString(row['nombre'] || row['Nombre']);
       const nota = this.sanitizeString(row['nota'] || row['Nota'] || row['notes'] || row['descripcion'] || row['Descripcion']) || '';
@@ -198,7 +225,7 @@ export class UploadService {
     };
   }
 
-  async saveParsedRecords(records: any[], parseErrors: any[] = [], parseWarnings: any[] = []) {
+  async saveParsedRecords(records: any[], parseErrors: any[] = [], parseWarnings: any[] = [], defaultYear?: number) {
     const savedRecords = [] as any[];
     const saveErrors: any[] = [];
     const saveWarnings: any[] = [];
@@ -207,12 +234,26 @@ export class UploadService {
     for (let i = 0; i < records.length; i++) {
       const record = records[i];
       try {
+        // Always use the selected year for dates
+        let recordDate = record.date;
+        if (defaultYear && recordDate) {
+          const parsedDate = new Date(recordDate);
+          if (isNaN(parsedDate.getTime())) {
+            // Invalid date, use default year with month from record if available
+            const month = parsedDate.getMonth() || 0;
+            recordDate = new Date(Date.UTC(defaultYear, month, 1, 12, 0, 0, 0)).toISOString();
+          } else {
+            // Replace the year with the selected year, keeping month and day
+            recordDate = new Date(Date.UTC(defaultYear, parsedDate.getUTCMonth(), parsedDate.getUTCDate(), 12, 0, 0, 0)).toISOString();
+          }
+        }
+        
       if (record.kind === 'income') {
         const created = await this.prisma.income.create({
           data: {
             source: record.categoria, // usar categoria como fuente
             amount: record.amount,
-            date: this.normalizeDateToMonthYear(record.date),
+            date: this.normalizeDateToMonthYear(recordDate),
             notes: record.nota,
             currency: record.currency,
           },
@@ -236,7 +277,7 @@ export class UploadService {
             categoryId: category.id,
             name: record.nombre || 'Gasto',
             amount: record.amount,
-            date: this.normalizeDateToMonthYear(record.date),
+            date: this.normalizeDateToMonthYear(recordDate),
             notes: record.nota ?? record.notes,
             currency: record.currency,
           },
