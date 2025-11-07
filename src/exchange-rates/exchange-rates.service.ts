@@ -59,38 +59,12 @@ export class ExchangeRatesService {
         });
       }
 
-      // Dólar MEP (Mercado Electrónico de Pagos)
-      if (data.mep) {
-        rates.push({
-          name: 'Dólar MEP',
-          code: 'USD_MEP',
-          buy: data.mep.value_buy || 0,
-          sell: data.mep.value_sell || 0,
-          lastUpdate: data.mep.last_update || new Date().toISOString(),
-        });
-      }
-
-      // Dólar CCL (Contado con Liquidación)
-      if (data.ccl) {
-        rates.push({
-          name: 'Dólar CCL',
-          code: 'USD_CCL',
-          buy: data.ccl.value_buy || 0,
-          sell: data.ccl.value_sell || 0,
-          lastUpdate: data.ccl.last_update || new Date().toISOString(),
-        });
-      }
-
       // Update cache
       this.cache = {
         data: rates,
         timestamp: Date.now(),
       };
 
-      // Save historical data (once per month)
-      await this.saveHistoricalData(rates);
-
-      
       return rates;
     } catch (error) {
       this.logger.error(`Failed to fetch exchange rates: ${error?.message || error}`);
@@ -123,79 +97,6 @@ export class ExchangeRatesService {
         lastUpdate: new Date().toISOString(),
       },
     ];
-  }
-
-  private async saveHistoricalData(rates: ExchangeRate[]) {
-    try {
-      const now = new Date();
-      const year = now.getFullYear();
-      const month = now.getMonth() + 1; // 1-12
-
-      for (const rate of rates) {
-        // Only save Oficial and Blue
-        if (rate.code !== 'USD_OFICIAL' && rate.code !== 'USD_BLUE') continue;
-        if (rate.buy === 0 || rate.sell === 0) continue;
-
-        await this.prisma.exchangeRateHistory.upsert({
-          where: {
-            code_year_month: {
-              code: rate.code,
-              year,
-              month,
-            },
-          },
-          update: {
-            buy: rate.buy,
-            sell: rate.sell,
-            name: rate.name,
-            updatedAt: new Date(),
-          },
-          create: {
-            code: rate.code,
-            name: rate.name,
-            buy: rate.buy,
-            sell: rate.sell,
-            year,
-            month,
-          },
-        });
-      }
-
-      
-    } catch (error) {
-      this.logger.error(`Failed to save historical data: ${error?.message || error}`);
-    }
-  }
-
-  async getHistoricalRates(code?: string, year?: number): Promise<any[]> {
-    try {
-      const where: any = {};
-      if (code) where.code = code;
-      if (year) where.year = year;
-
-      const history = await this.prisma.exchangeRateHistory.findMany({
-        where,
-        orderBy: [
-          { year: 'desc' },
-          { month: 'desc' },
-        ],
-      });
-
-      return history.map((h) => ({
-        id: h.id,
-        code: h.code,
-        name: h.name,
-        buy: h.buy,
-        sell: h.sell,
-        year: h.year,
-        month: h.month,
-        createdAt: h.createdAt.toISOString(),
-        updatedAt: h.updatedAt.toISOString(),
-      }));
-    } catch (error) {
-      this.logger.error(`Failed to get historical rates: ${error?.message || error}`);
-      return [];
-    }
   }
 
   async convertCurrency(amount: number, fromCurrency: string, toCurrency: string): Promise<number> {

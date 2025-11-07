@@ -9,8 +9,6 @@ async function main() {
   
   await prisma.expense.deleteMany();
   await prisma.income.deleteMany();
-  await prisma.investment.deleteMany();
-  await prisma.exchangeRateHistory.deleteMany();
   await prisma.person.deleteMany();
   await prisma.category.deleteMany();
   await prisma.categoryType.deleteMany();

@@ -55,37 +55,6 @@ model Income {
   category Category @relation(fields: [categoryId], references: [id])
 }
 
-model ExchangeRateHistory {
-  id         String   @id @default(uuid())
-  code       String   // USD_OFICIAL, USD_BLUE, etc.
-  name       String   // Dólar Oficial, Dólar Blue, etc.
-  buy        Float
-  sell       Float
-  year       Int
-  month      Int      // 1-12
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-
-  @@unique([code, year, month])
-  @@index([code, year, month])
-}
-
-model Investment {
-  id          String   @id @default(uuid())
-  type        String   // bitcoin, fci, acciones, etc.
-  name        String   // Nombre de la inversión
-  amount      Float    // Monto invertido
-  value       Float    // Valor actual
-  currency    String   @default("ARS")
-  date        DateTime // Fecha de inversión
-  notes       String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  
-  @@index([type])
-  @@index([date])
-}
-
 model FinancialAnalysisConfig {
   id             String   @id @default("default")
   fixed          Json     @default("[]") // Array de nombres de categorías en minúsculas

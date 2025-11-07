@@ -7,7 +7,6 @@ import { ExpensesModule } from './expenses/expenses.module';
 import { IncomeModule } from './income/income.module';
 import { CategoriesModule } from './categories/categories.module';
 import { ExchangeRatesModule } from './exchange-rates/exchange-rates.module';
-import { InvestmentsModule } from './investments/investments.module';
 import { FAConfigModule } from './fa-config/fa-config.module';
 
 @Module({
@@ -22,7 +21,6 @@ import { FAConfigModule } from './fa-config/fa-config.module';
     IncomeModule,
     CategoriesModule,
     ExchangeRatesModule,
-    InvestmentsModule,
     FAConfigModule,
   ],
 })
