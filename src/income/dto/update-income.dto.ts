@@ -4,7 +4,7 @@ import { Transform } from 'class-transformer';
 export class UpdateIncomeDto {
   @IsOptional()
   @IsString()
-  source?: string;
+  concept?: string;
 
   @IsOptional()
   @IsNumber()
@@ -17,7 +17,7 @@ export class UpdateIncomeDto {
 
   @IsOptional()
   @IsString()
-  notes?: string;
+  note?: string;
 
   @IsOptional()
   @Matches(/^[A-Z]{3}$/)

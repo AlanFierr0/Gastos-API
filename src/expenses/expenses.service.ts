@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateExpenseDto } from './dto/create-expense.dto';
 import { UpdateExpenseDto } from './dto/update-expense.dto';
 import { QueryExpenseDto } from './dto/query-expense.dto';
+import { Prisma } from '@prisma/client';
 
 @Injectable()
 export class ExpensesService {
@@ -43,8 +44,17 @@ export class ExpensesService {
       throw new NotFoundException('Category not found or not of type "expense"');
     }
     
+    const data = {
+      categoryId: dto.categoryId,
+      concept: dto.concept,
+      amount: dto.amount,
+      date: this.toUtcNoon(dto.date),
+      note: dto.note,
+      currency: dto.currency || 'ARS',
+    } as unknown as Prisma.ExpenseUncheckedCreateInput;
+
     return this.prisma.expense.create({
-      data: { categoryId: dto.categoryId, name: dto.name, amount: dto.amount, date: this.toUtcNoon(dto.date), notes: dto.notes, currency: dto.currency || 'ARS' },
+      data,
       include: { category: true },
     });
   }
@@ -57,16 +67,19 @@ export class ExpensesService {
         throw new NotFoundException('Category not found or not of type "expense"');
       }
     }
+
+    const data = {
+      categoryId: dto.categoryId,
+      concept: dto.concept,
+      amount: dto.amount,
+      date: dto.date ? this.toUtcNoon(dto.date) : undefined,
+      note: dto.note,
+      currency: dto.currency,
+    } as unknown as Prisma.ExpenseUncheckedUpdateInput;
+
     return this.prisma.expense.update({
       where: { id },
-      data: {
-        categoryId: dto.categoryId,
-        name: dto.name,
-        amount: dto.amount,
-        date: dto.date ? this.toUtcNoon(dto.date) : undefined,
-        notes: dto.notes,
-        currency: dto.currency,
-      },
+      data,
       include: { category: true },
     });
   }

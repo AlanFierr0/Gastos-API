@@ -4,8 +4,7 @@ import {
   Body,
   UploadedFile, 
   UseInterceptors,
-  BadRequestException,
-  Req
+  BadRequestException
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { UploadService } from './upload.service';
@@ -21,7 +20,7 @@ export class UploadController {
   @UseInterceptors(
     FileInterceptor('file', {
       limits: {
-        fileSize: 10 * 1024 * 1024, // 10MB limit
+        fileSize: 10 * 1024 * 1024 * 1024, // 10MB limit
       },
       fileFilter: (req, file, callback) => {
         if (!file.originalname.match(/\.(xlsx|xls)$/)) {
@@ -31,24 +30,21 @@ export class UploadController {
       },
     })
   )
-  async previewExcel(@UploadedFile() file: Express.Multer.File, @Req() req: any) {
+  async previewExcel(@UploadedFile() file: Express.Multer.File) {
     if (!file) {
       throw new BadRequestException('No file uploaded');
     }
 
-    // Get year from form data (multipart/form-data)
-    const year = req.body?.year ? parseInt(req.body.year, 10) : new Date().getFullYear();
-    return this.uploadService.parseExcel(file, year);
+    return this.uploadService.parseExcel(file);
   }
 
   @Post('confirm')
-  async confirmImport(@Body() body: { records: any[]; errors?: any[]; warnings?: any[]; year?: number }) {
+  async confirmImport(@Body() body: { records: any[]; errors?: any[]; warnings?: any[] }) {
     if (!body.records || !Array.isArray(body.records)) {
       throw new BadRequestException('Records array is required');
     }
 
-    const year = body.year ? parseInt(String(body.year), 10) : new Date().getFullYear();
-    return this.uploadService.saveParsedRecords(body.records, body.errors || [], body.warnings || [], year);
+    return this.uploadService.saveParsedRecords(body.records, body.errors || [], body.warnings || []);
   }
 
   @Post('excel')

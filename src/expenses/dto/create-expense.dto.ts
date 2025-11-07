@@ -6,7 +6,7 @@ export class CreateExpenseDto {
   categoryId: string;
 
   @IsString()
-  name: string;
+  concept: string;
 
   @IsNumber()
   @Transform(({ value }) => (typeof value === 'string' ? parseFloat(value) : value))
@@ -17,7 +17,7 @@ export class CreateExpenseDto {
 
   @IsOptional()
   @IsString()
-  notes?: string;
+  note?: string;
 
   @IsOptional()
   @Matches(/^[A-Z]{3}$/)

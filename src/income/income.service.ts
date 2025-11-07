@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateIncomeDto } from './dto/create-income.dto';
 import { UpdateIncomeDto } from './dto/update-income.dto';
 import { QueryIncomeDto } from './dto/query-income.dto';
+import { Prisma } from '@prisma/client';
 
 @Injectable()
 export class IncomeService {
@@ -15,8 +16,8 @@ export class IncomeService {
       if (query.dateFrom) where.date.gte = new Date(query.dateFrom);
       if (query.dateTo) where.date.lte = new Date(query.dateTo);
     }
-    if (query.source) {
-      where.source = { contains: query.source, mode: 'insensitive' };
+    if (query.concept) {
+      where.concept = { contains: query.concept, mode: 'insensitive' };
     }
     if (query.minAmount !== undefined || query.maxAmount !== undefined) {
       where.amount = {};
@@ -40,22 +41,21 @@ export class IncomeService {
   }
 
   async create(dto: CreateIncomeDto) {
-    if (dto.categoryId) {
-      const category = await this.prisma.category.findUnique({ where: { id: dto.categoryId }, include: { type: true } });
-      if (!category || category.type.name.toLowerCase() !== 'income') {
-        throw new NotFoundException('Category not found or not of type "income"');
-      }
+    const category = await this.prisma.category.findUnique({ where: { id: dto.categoryId }, include: { type: true } });
+    if (!category || category.type.name.toLowerCase() !== 'income') {
+      throw new NotFoundException('Category not found or not of type "income"');
     }
+    const data = {
+      concept: dto.concept,
+      amount: dto.amount,
+      date: this.toUtcNoon(dto.date),
+      note: dto.note,
+      currency: dto.currency || 'ARS',
+      categoryId: dto.categoryId,
+      isRecurring: dto.isRecurring ?? false,
+    } as unknown as Prisma.IncomeUncheckedCreateInput;
     return this.prisma.income.create({
-      data: {
-        source: dto.source,
-        amount: dto.amount,
-        date: this.toUtcNoon(dto.date),
-        notes: dto.notes,
-        currency: dto.currency || 'ARS',
-        categoryId: dto.categoryId,
-        isRecurring: dto.isRecurring ?? false,
-      },
+      data,
       include: { category: true },
     });
   }
@@ -68,17 +68,18 @@ export class IncomeService {
         throw new NotFoundException('Category not found or not of type "income"');
       }
     }
+    const data = {
+      concept: dto.concept,
+      amount: dto.amount,
+      date: dto.date ? this.toUtcNoon(dto.date) : undefined,
+      note: dto.note,
+      currency: dto.currency,
+      categoryId: dto.categoryId,
+      isRecurring: dto.isRecurring,
+    } as unknown as Prisma.IncomeUncheckedUpdateInput;
     return this.prisma.income.update({
       where: { id },
-      data: {
-        source: dto.source,
-        amount: dto.amount,
-        date: dto.date ? this.toUtcNoon(dto.date) : undefined,
-        notes: dto.notes,
-        currency: dto.currency,
-        categoryId: dto.categoryId,
-        isRecurring: dto.isRecurring,
-      },
+      data,
       include: { category: true },
     });
   }

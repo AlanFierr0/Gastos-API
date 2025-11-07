@@ -31,10 +31,10 @@ model Category {
 model Expense {
   id         String   @id @default(uuid())
   categoryId String
-  name       String?  // nombre agrupable (opcional para compatibilidad con datos existentes)
+  concept    String
   amount     Float
   date       DateTime
-  notes      String?
+  note       String?
   createdAt  DateTime @default(now())
   currency   String   @default("ARS")
 
@@ -42,17 +42,17 @@ model Expense {
 }
 
 model Income {
-  id         String   @id @default(uuid())
-  categoryId String?
-  source     String
-  amount     Float
-  date       DateTime
-  notes      String?
-  createdAt  DateTime @default(now())
-  currency   String   @default("ARS")
-  isRecurring Boolean @default(false)
+  id          String   @id @default(uuid())
+  categoryId  String
+  concept     String
+  amount      Float
+  date        DateTime
+  note        String?
+  createdAt   DateTime @default(now())
+  currency    String   @default("ARS")
+  isRecurring Boolean  @default(false)
 
-  category Category? @relation(fields: [categoryId], references: [id])
+  category Category @relation(fields: [categoryId], references: [id])
 }
 
 model ExchangeRateHistory {

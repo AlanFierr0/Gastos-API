@@ -12,7 +12,7 @@ export class QueryIncomeDto {
 
   @IsOptional()
   @IsString()
-  source?: string; // filter by source contains
+  concept?: string; // filter by concept contains
 
   @IsOptional()
   @IsNumber()

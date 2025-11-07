@@ -1,6 +1,7 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import * as ExcelJS from 'exceljs';
+import { Prisma } from '@prisma/client';
 
 @Injectable()
 export class UploadService {
@@ -11,9 +12,7 @@ export class UploadService {
   constructor(private prisma: PrismaService) {}
   
 
-  async parseExcel(file: Express.Multer.File, defaultYear?: number) {
-    
-    
+  async parseExcel(file: Express.Multer.File) {
     // Security: Check file size
     if (file.size > this.MAX_FILE_SIZE) {
       
@@ -27,104 +26,120 @@ export class UploadService {
     if (workbook.worksheets.length === 0) {
       throw new BadRequestException('Excel file contains no sheets');
     }
+    const allRecords: any[] = [];
+    const allErrors: any[] = [];
+    const allWarnings: any[] = [];
 
-    const worksheet = workbook.worksheets[0];
-    
-    // Convert to array format to check for "Planilla gastos" format
+    for (const worksheet of workbook.worksheets) {
+      if (!worksheet) continue;
+
+      const sheetYear = this.extractYearFromSheetName(worksheet.name);
+
+      const arrayData = this.extractSheetData(worksheet);
+
+      if (arrayData.length === 0) {
+        allWarnings.push({
+          sheet: worksheet.name,
+          item: worksheet.name,
+          reason: 'La hoja está vacía y se omitió del procesamiento.',
+        });
+        continue;
+      }
+
+      if (arrayData.length > this.MAX_ROWS) {
+        throw new BadRequestException(`La hoja "${worksheet.name}" supera el máximo de ${this.MAX_ROWS} filas soportadas.`);
+      }
+
+      try {
+        const isPlanillaFormat = this.detectPlanillaFormat(arrayData, worksheet);
+        if (isPlanillaFormat) {
+          const result = await this.parsePlanillaFormat(arrayData, worksheet, sheetYear);
+          allRecords.push(...result.records);
+          allErrors.push(...result.errors);
+          allWarnings.push(...result.warnings);
+          continue;
+        }
+
+        const result = this.parseTraditionalFormat(worksheet, sheetYear);
+        allRecords.push(...result.records);
+        allErrors.push(...result.errors);
+        allWarnings.push(...result.warnings);
+      } catch (error) {
+        if (error instanceof BadRequestException) {
+          throw error;
+        }
+        allErrors.push({
+          sheet: worksheet.name,
+          item: worksheet.name,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    return {
+      records: allRecords,
+      total: allRecords.length,
+      errors: allErrors,
+      warnings: allWarnings,
+    };
+  }
+
+  private extractSheetData(worksheet: ExcelJS.Worksheet): any[][] {
     const arrayData: any[][] = [];
     worksheet.eachRow((row, rowNumber) => {
       const rowData: any[] = [];
       row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
         let value: any = cell.value;
-        
-        // Handle different cell value types in ExcelJS
+
         if (value === null || value === undefined) {
           value = '';
         } else if (typeof value === 'object') {
-          // ExcelJS can return objects for formulas, rich text, etc.
-          // Formula objects have 'result' property with the calculated value
           if ('result' in value) {
-            value = value.result; // Formula result (this is the actual numeric/text value)
+            value = value.result;
           } else if ('text' in value) {
             value = value.text;
           } else if ('richText' in value) {
-            // Rich text: extract plain text
             value = value.richText.map((rt: any) => rt.text || '').join('');
           } else if ('value' in value) {
             value = value.value;
           } else {
-            // Try to extract numeric value if it's a number object
             const numValue = Number(value);
             value = !isNaN(numValue) ? numValue : String(value);
           }
         }
-        
-        // Ensure we have a proper value
+
         rowData[colNumber - 1] = value;
       });
       arrayData[rowNumber - 1] = rowData;
     });
-    
-    
-    // Security: Limit number of rows
-    if (arrayData.length > this.MAX_ROWS) {
-      
-      throw new BadRequestException(`File contains too many rows. Maximum is ${this.MAX_ROWS}`);
-    }
 
-    if (arrayData.length === 0) {
-      
-      throw new BadRequestException('Excel file is empty');
-    }
-    
-    // Check if this is the "Planilla gastos" format (conceptos + meses)
-    const isPlanillaFormat = this.detectPlanillaFormat(arrayData, worksheet);
-    
-    if (isPlanillaFormat) {
-      try {
-        // Even if no records found, return the result (empty array is valid)
-        const result = await this.parsePlanillaFormat(arrayData, worksheet);
-        return {
-          records: result.records,
-          total: result.total,
-          errors: result.errors || [],
-          warnings: result.warnings || [],
-        };
-      } catch (error) {
-        // If parsing planilla format fails with BadRequestException, throw it
-        if (error instanceof BadRequestException) {
-          throw error;
-        }
-        // For other errors, fall back to traditional format
-        // Continue to traditional format parsing
-      }
-    }
+    return arrayData;
+  }
 
-    // Traditional format: Convert to JSON with column names
+  private parseTraditionalFormat(worksheet: ExcelJS.Worksheet, sheetYear?: number) {
     const data: any[] = [];
     const headers: string[] = [];
-    
-    // Get headers from first row
+    const warnings: any[] = [];
+    const errors: any[] = [];
+
     const firstRow = worksheet.getRow(1);
     firstRow.eachCell({ includeEmpty: false }, (cell, colNumber) => {
       headers[colNumber - 1] = String(cell.value || '');
     });
-    
-    // Convert rows to objects
+
     worksheet.eachRow((row, rowNumber) => {
-      if (rowNumber === 1) return; // Skip header row
+      if (rowNumber === 1) return;
       const rowData: any = {};
       row.eachCell({ includeEmpty: false }, (cell, colNumber) => {
         const header = headers[colNumber - 1];
-        if (header) {
-          let value: any = cell.value;
-          if (value && typeof value === 'object' && 'text' in value) {
-            value = value.text;
-          } else if (value && typeof value === 'object' && 'result' in value) {
-            value = value.result;
-          }
-          rowData[header] = value;
+        if (!header) return;
+        let value: any = cell.value;
+        if (value && typeof value === 'object' && 'text' in value) {
+          value = value.text;
+        } else if (value && typeof value === 'object' && 'result' in value) {
+          value = value.result;
         }
+        rowData[header] = value;
       });
       if (Object.keys(rowData).length > 0) {
         data.push(rowData);
@@ -132,74 +147,85 @@ export class UploadService {
     });
 
     if (data.length === 0) {
-      
       throw new BadRequestException('Excel file is empty or could not be parsed');
     }
 
-    // Log first row to see what columns we have
     const first = data[0] as any;
-    
-
-    // Validate minimal columns
     const hasAmount = first && (first['amount'] !== undefined || first['monto'] !== undefined || first['Monto'] !== undefined);
     const hasDate = first && (first['date'] !== undefined || first['fecha'] !== undefined || first['Fecha'] !== undefined);
-    
-    
-    
+
     if (!hasAmount || !hasDate) {
       const availableColumns = Object.keys(first || {}).join(', ');
-      
       throw new BadRequestException(`El archivo no tiene las columnas requeridas. Columnas encontradas: "${availableColumns}". Se requieren: "amount" (o "monto") y "date" (o "fecha"). Si tu archivo es una planilla con conceptos y meses, asegurate de que tenga una fila con "Conceptos" en la primera columna.`);
     }
 
-    // Parse rows without saving
-    const parsedRecords = [];
+    const parsedRecords = [] as any[];
     for (const row of data) {
       const type = (this.sanitizeString(row['type'] || row['Type']) || '').toLowerCase();
       const amount = this.parseNumber(row['amount'] || row['monto'] || row['Monto']);
-      let date = this.parseDate(row['date'] || row['fecha'] || row['Fecha']);
-      
-      // If we have a default year, always use it for the date
-      if (defaultYear) {
+      const rawDateValue = row['date'] || row['fecha'] || row['Fecha'];
+      let date = this.parseDate(rawDateValue);
+
+      if (sheetYear !== undefined) {
         if (date) {
-          // Replace the year with the selected year, keeping month and day
-          date = new Date(Date.UTC(defaultYear, date.getUTCMonth(), date.getUTCDate(), 12, 0, 0, 0));
-        } else {
-          // If date is invalid, try to extract month from the date field
-          const dateValue = row['date'] || row['fecha'] || row['Fecha'];
-          if (dateValue) {
-            // Try to parse as month number (1-12) or month name
-            const monthStr = String(dateValue).trim();
-            const monthMatch = monthStr.match(/(\d{1,2})/);
-            if (monthMatch) {
-              const month = parseInt(monthMatch[1], 10);
-              if (month >= 1 && month <= 12) {
-                date = new Date(Date.UTC(defaultYear, month - 1, 1, 12, 0, 0, 0));
-              }
-            }
-          }
-          // If still no date, use January of the default year
-          if (!date) {
-            date = new Date(Date.UTC(defaultYear, 0, 1, 12, 0, 0, 0));
+          date = new Date(Date.UTC(sheetYear, date.getUTCMonth(), date.getUTCDate(), 12, 0, 0, 0));
+        } else if (rawDateValue) {
+          const month = this.extractMonthFromValue(rawDateValue);
+          if (month !== null) {
+            date = new Date(Date.UTC(sheetYear, month - 1, 1, 12, 0, 0, 0));
           }
         }
+
+        if (!date) {
+          date = new Date(Date.UTC(sheetYear, 0, 1, 12, 0, 0, 0));
+          warnings.push({
+            sheet: worksheet.name,
+            row,
+            reason: 'No se pudo determinar el mes; se utilizó enero por defecto basado en el nombre de la hoja.',
+            sheetYear,
+          });
+        }
       }
-      
+
+      if (amount === null || !date) {
+        warnings.push({
+          sheet: worksheet.name,
+          row,
+          reason: 'Fila omitida por no tener monto o fecha válidos.',
+        });
+        continue;
+      }
+
       const categoria = this.sanitizeString(row['categoria'] || row['category'] || row['Categoria'] || row['Category']);
-      const nombre = this.sanitizeString(row['nombre'] || row['Nombre']);
-      const nota = this.sanitizeString(row['nota'] || row['Nota'] || row['notes'] || row['descripcion'] || row['Descripcion']) || '';
-
-      if (amount === null || !date) continue;
-
+      const concepto = this.sanitizeString(row['concepto'] || row['Concepto'] || row['concept'] || row['Concept'] || row['nombre'] || row['Nombre']);
+      const rawNota = this.sanitizeString(row['nota'] || row['Nota'] || row['notes'] || row['descripcion'] || row['Descripcion']);
       const currency = (this.sanitizeString(row['currency'] || row['Currency']) || 'ARS').toUpperCase();
-      
-      if (type === 'income' || row['source'] || row['Source']) {
-        const fallbackSource = this.sanitizeString(row['source'] || row['Source'] || 'Ingreso') || 'Ingreso';
+
+      if (!categoria) {
+        errors.push({
+          sheet: worksheet.name,
+          row,
+          reason: 'Cada registro debe tener una categoría definida.',
+        });
+        continue;
+      }
+
+      if (!concepto) {
+        errors.push({
+          sheet: worksheet.name,
+          row,
+          reason: 'Cada registro debe tener un concepto definido.',
+        });
+        continue;
+      }
+
+      if (type === 'income') {
         parsedRecords.push({
           kind: 'income',
-          categoria: categoria || fallbackSource,
-          nombre: nombre || 'Ingreso',
-          nota,
+          categoria,
+          concepto,
+          nombre: concepto,
+          nota: rawNota || '',
           amount,
           date: date.toISOString(),
           currency,
@@ -207,9 +233,10 @@ export class UploadService {
       } else {
         parsedRecords.push({
           kind: 'expense',
-          categoria: categoria || 'Sin categoría',
-          nombre: nombre || 'Gasto',
-          nota,
+          categoria,
+          concepto,
+          nombre: concepto,
+          nota: rawNota || '',
           amount,
           date: date.toISOString(),
           currency,
@@ -219,91 +246,171 @@ export class UploadService {
 
     return {
       records: parsedRecords,
-      total: parsedRecords.length,
-      errors: [],
-      warnings: [],
+      errors,
+      warnings,
     };
   }
 
-  async saveParsedRecords(records: any[], parseErrors: any[] = [], parseWarnings: any[] = [], defaultYear?: number) {
-    const savedRecords = [] as any[];
+  private extractYearFromSheetName(name: string): number | undefined {
+    if (!name) return undefined;
+    const match = name.match(/(20\d{2})/);
+    if (match) {
+      const year = parseInt(match[1], 10);
+      if (year >= 1900 && year <= 2500) {
+        return year;
+      }
+    }
+    return undefined;
+  }
+
+  private extractMonthFromValue(value: any): number | null {
+    if (value === null || value === undefined) return null;
+    const monthNames = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'setiembre', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+    const normalized = String(value).trim().toLowerCase();
+    const numericMatch = normalized.match(/(\d{1,2})/);
+    if (numericMatch) {
+      const month = parseInt(numericMatch[1], 10);
+      if (month >= 1 && month <= 12) {
+        return month;
+      }
+    }
+    const nameIndex = monthNames.indexOf(normalized);
+    if (nameIndex !== -1) {
+      const mapping = [1,2,3,4,5,6,7,8,9,9,10,11,12];
+      return mapping[nameIndex];
+    }
+    return null;
+  }
+
+  async saveParsedRecords(records: any[], parseErrors: any[] = [], parseWarnings: any[] = []) {
+    const savedRecords: any[] = [];
     const saveErrors: any[] = [];
     const saveWarnings: any[] = [];
-    
-    // Process records
+
+    const pushError = (index: number, record: any, message: string) => {
+      saveErrors.push({
+        index,
+        record: {
+          kind: record.kind,
+          categoria: record.categoria,
+          concepto: record.concepto,
+          amount: record.amount,
+          date: record.date,
+          note: record.note ?? record.notes ?? record.nota ?? null,
+        },
+        error: message,
+      });
+    };
+
     for (let i = 0; i < records.length; i++) {
       const record = records[i];
+
       try {
-        // Always use the selected year for dates
-        let recordDate = record.date;
-        if (defaultYear && recordDate) {
-          const parsedDate = new Date(recordDate);
-          if (isNaN(parsedDate.getTime())) {
-            // Invalid date, use default year with month from record if available
-            const month = parsedDate.getMonth() || 0;
-            recordDate = new Date(Date.UTC(defaultYear, month, 1, 12, 0, 0, 0)).toISOString();
-          } else {
-            // Replace the year with the selected year, keeping month and day
-            recordDate = new Date(Date.UTC(defaultYear, parsedDate.getUTCMonth(), parsedDate.getUTCDate(), 12, 0, 0, 0)).toISOString();
-          }
+        const recordDate = record.date;
+        if (!recordDate) {
+          pushError(i, record, 'Registro sin fecha válida.');
+          continue;
         }
-        
-      if (record.kind === 'income') {
-        const created = await this.prisma.income.create({
-          data: {
-            source: record.categoria, // usar categoria como fuente
+
+        const categoryName = this.sanitizeString(record.categoria || record.categoryName || record.category?.name);
+        if (!categoryName) {
+          pushError(i, record, 'La categoría es obligatoria en cada registro.');
+          continue;
+        }
+
+        const conceptName = this.sanitizeString(
+          record.concepto ||
+          record.nombre ||
+          record.name ||
+          record.concept ||
+          record.notes ||
+          record.nota
+        );
+
+        if (!conceptName) {
+          pushError(i, record, 'El concepto es obligatorio en cada registro.');
+          continue;
+        }
+
+        const notesValue = this.sanitizeString(record.nota || record.notes || record.note);
+        const normalizedDate = this.normalizeDateToMonthYear(recordDate);
+
+        if (record.kind === 'income') {
+          const incomeType = await this.prisma.categoryType.upsert({
+            where: { name: 'income' },
+            update: {},
+            create: { name: 'income' },
+          });
+
+          const existingCategory = await this.prisma.category.findFirst({
+            where: {
+              name: categoryName,
+              typeId: incomeType.id,
+            },
+          });
+
+          const category = existingCategory || (await this.prisma.category.create({
+            data: { name: categoryName, typeId: incomeType.id },
+          }));
+
+          const incomeData = {
+            concept: conceptName,
             amount: record.amount,
-            date: this.normalizeDateToMonthYear(recordDate),
-            notes: record.nota,
+            date: normalizedDate,
+            note: notesValue || null,
             currency: record.currency,
-          },
-        });
-        savedRecords.push({ kind: 'income', ...created });
-      } else {
-        const typeRow = await this.prisma.categoryType.upsert({ 
-          where: { name: 'expense' }, 
-          update: {}, 
-          create: { name: 'expense' } 
-        });
-        const existingCategory = await this.prisma.category.findFirst({ 
-          where: { name: record.categoria || record.categoryName } 
-        });
-        const category = existingCategory || (await this.prisma.category.create({ 
-          data: { name: (record.categoria || record.categoryName), typeId: typeRow.id } 
-        }));
-        
-        const created = await this.prisma.expense.create({
-          data: {
             categoryId: category.id,
-            name: record.nombre || 'Gasto',
+            isRecurring: record.isRecurring ?? false,
+          } as unknown as Prisma.IncomeUncheckedCreateInput;
+
+          const created = await this.prisma.income.create({
+            data: incomeData,
+            include: { category: true },
+          });
+
+          savedRecords.push({ kind: 'income', ...created });
+        } else {
+          const expenseType = await this.prisma.categoryType.upsert({
+            where: { name: 'expense' },
+            update: {},
+            create: { name: 'expense' },
+          });
+
+          const existingCategory = await this.prisma.category.findFirst({
+            where: {
+              name: categoryName,
+              typeId: expenseType.id,
+            },
+          });
+
+          const category = existingCategory || (await this.prisma.category.create({
+            data: { name: categoryName, typeId: expenseType.id },
+          }));
+
+          const expenseData = {
+            categoryId: category.id,
+            concept: conceptName,
             amount: record.amount,
-            date: this.normalizeDateToMonthYear(recordDate),
-            notes: record.nota ?? record.notes,
+            date: normalizedDate,
+            note: notesValue || null,
             currency: record.currency,
-          },
-          include: { category: true },
-        });
-        savedRecords.push({ kind: 'expense', ...created });
+          } as unknown as Prisma.ExpenseUncheckedCreateInput;
+
+          const created = await this.prisma.expense.create({
+            data: expenseData,
+            include: { category: true },
+          });
+
+          savedRecords.push({ kind: 'expense', ...created });
         }
       } catch (error) {
-        saveErrors.push({
-          index: i,
-          record: {
-            kind: record.kind,
-            source: record.source,
-            categoryName: record.categoryName,
-            amount: record.amount,
-            date: record.date,
-            notes: record.notes,
-          },
-          error: error instanceof Error ? error.message : String(error),
-        });
+        pushError(i, record, error instanceof Error ? error.message : String(error));
       }
     }
 
     const allErrors = [...parseErrors, ...saveErrors];
     const allWarnings = [...parseWarnings, ...saveWarnings];
-    
+
     let message = `${savedRecords.length} registros importados exitosamente`;
     if (allErrors.length > 0) {
       message += `. ${allErrors.length} error(es) durante el procesamiento.`;
@@ -311,7 +418,7 @@ export class UploadService {
     if (allWarnings.length > 0) {
       message += `. ${allWarnings.length} advertencia(s).`;
     }
-    
+
     return {
       success: true,
       message,
@@ -442,7 +549,7 @@ export class UploadService {
     return false;
   }
 
-  private async parsePlanillaFormat(arrayData: any[][], worksheet: ExcelJS.Worksheet): Promise<{ records: any[]; total: number; errors: any[]; warnings: any[] }> {
+  private async parsePlanillaFormat(arrayData: any[][], worksheet: ExcelJS.Worksheet, sheetYear?: number): Promise<{ records: any[]; total: number; errors: any[]; warnings: any[] }> {
     const parsedRecords = [];
     const errors: any[] = [];
     const warnings: any[] = [];
@@ -532,16 +639,16 @@ export class UploadService {
 
     const headerRow = arrayData[headerRowIndex];
     
-    // Step 2: Find year from first row or use current year
-    let year = new Date().getFullYear();
-    if (arrayData[0] && arrayData[0][0] !== null && arrayData[0][0] !== undefined) {
+    // Step 2: Find year from sheet name or from first row fallback
+    let year = sheetYear ?? new Date().getFullYear();
+    if (sheetYear === undefined && arrayData[0] && arrayData[0][0] !== null && arrayData[0][0] !== undefined) {
       const firstCellValue = arrayData[0][0];
       if (typeof firstCellValue === 'number') {
         const yearCandidate = firstCellValue;
         if (yearCandidate >= 2000 && yearCandidate <= 2100) {
           year = yearCandidate;
-        } 
-      } 
+        }
+      }
     }
 
     // Step 3: Map month columns to their indices
@@ -715,6 +822,20 @@ export class UploadService {
 
       // Remove text in parentheses from itemName (ignore it completely)
       itemName = itemName.replace(/\s*\([^)]+\)\s*/g, '').trim();
+
+      const sanitizedCategory = this.sanitizeString(currentCategory);
+      const sanitizedConcept = this.sanitizeString(itemName);
+
+      if (!sanitizedCategory || !sanitizedConcept) {
+        warnings.push({
+          sheet: worksheet.name,
+          row: i + 1,
+          category: currentCategory,
+          item: itemName,
+          reason: 'Se omitió la fila por no tener categoría o concepto válidos.',
+        });
+        continue;
+      }
 
       // Process each month column for this item
       for (const [monthStr, columnIndex] of Object.entries(monthColumnMap)) {
@@ -890,6 +1011,7 @@ export class UploadService {
             // Validate date
             if (isNaN(date.getTime())) {
               warnings.push({
+                sheet: worksheet.name,
                 row: i + 1,
                 item: itemName,
                 category: currentCategory,
@@ -908,14 +1030,15 @@ export class UploadService {
             const isIncome = categoryLower.includes('ingreso');
             const kind = isIncome ? 'income' : 'expense';
             
-            // For income: use category name as source, and itemName as notes
-            // For expense: use category name as categoryName, and itemName as notes
+            // For income: use category name, and item name as concept
+            // For expense: use category name, and item name as concept
             if (kind === 'income') {
-              // Ingresos: categoria = nombre de la categoría (p.ej. "Mesada"), nombre = item (p.ej. "Alan"), nota vacía (se ignoran paréntesis)
+              // Ingresos: categoria = grupo, concepto = item
               parsedRecords.push({
                 kind: 'income',
-                categoria: currentCategory,
-                nombre: itemName,
+                categoria: sanitizedCategory,
+                concepto: sanitizedConcept,
+                nombre: sanitizedConcept,
                 nota: '',
                 amount: value,
                 date: date.toISOString(),
@@ -925,8 +1048,9 @@ export class UploadService {
               // Gastos: categoria = categoría, nombre = item, nota vacía (se ignoran paréntesis)
               parsedRecords.push({
                 kind: 'expense',
-                categoria: currentCategory.toLowerCase(),
-                nombre: itemName,
+                categoria: sanitizedCategory,
+                concepto: sanitizedConcept,
+                nombre: sanitizedConcept,
                 nota: '',
                 amount: value,
                 date: date.toISOString(),
@@ -935,6 +1059,7 @@ export class UploadService {
             }
           } catch (error) {
             errors.push({
+              sheet: worksheet.name,
               row: i + 1,
               item: itemName,
               category: currentCategory,
@@ -947,6 +1072,7 @@ export class UploadService {
         } else if (rawValue !== '') {
           // Value exists but couldn't be parsed - add warning
           warnings.push({
+            sheet: worksheet.name,
             row: i + 1,
             item: itemName,
             category: currentCategory,

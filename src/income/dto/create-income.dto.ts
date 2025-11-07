@@ -2,8 +2,11 @@ import { IsNumber, IsISO8601, IsOptional, IsString, Matches, IsUUID, IsBoolean }
 import { Transform } from 'class-transformer';
 
 export class CreateIncomeDto {
+  @IsUUID()
+  categoryId: string;
+
   @IsString()
-  source: string;
+  concept: string;
 
   @IsNumber()
   @Transform(({ value }) => (typeof value === 'string' ? parseFloat(value) : value))
@@ -14,16 +17,12 @@ export class CreateIncomeDto {
 
   @IsOptional()
   @IsString()
-  notes?: string;
+  note?: string;
 
   @IsOptional()
   @Matches(/^[A-Z]{3}$/)
   @Transform(({ value }) => (typeof value === 'string' ? value.toUpperCase() : value))
   currency?: string;
-
-  @IsOptional()
-  @IsUUID()
-  categoryId?: string;
 
   @IsOptional()
   @IsBoolean()

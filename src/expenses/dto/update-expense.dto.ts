@@ -8,7 +8,7 @@ export class UpdateExpenseDto {
 
   @IsOptional()
   @IsString()
-  name?: string;
+  concept?: string;
 
   @IsOptional()
   @IsNumber()
@@ -21,7 +21,7 @@ export class UpdateExpenseDto {
 
   @IsOptional()
   @IsString()
-  notes?: string;
+  note?: string;
 
   @IsOptional()
   @Matches(/^[A-Z]{3}$/)

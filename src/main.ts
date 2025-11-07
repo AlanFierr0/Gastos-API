@@ -2,9 +2,16 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
+import * as express from 'express';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, {
+    bodyParser: false, // Disable default to configure our own
+  });
+  
+  // Configure body parser with no size limit - must be before other middleware
+  app.use(express.json({ limit: Infinity }));
+  app.use(express.urlencoded({ limit: Infinity, extended: true }));
   
   // Enable validation globally
   app.useGlobalPipes(new ValidationPipe({
