@@ -4,6 +4,7 @@ import { CreateIncomeDto } from './dto/create-income.dto';
 import { UpdateIncomeDto } from './dto/update-income.dto';
 import { QueryIncomeDto } from './dto/query-income.dto';
 import { Prisma } from '@prisma/client';
+import { toUtcNoon } from '../common/utils/date.util';
 
 @Injectable()
 export class IncomeService {
@@ -34,12 +35,6 @@ export class IncomeService {
     return income;
   }
 
-  private toUtcNoon(dateIso: string): Date {
-    const d = new Date(dateIso);
-    d.setUTCHours(12, 0, 0, 0);
-    return d;
-  }
-
   async create(dto: CreateIncomeDto) {
     const category = await this.prisma.category.findUnique({ where: { id: dto.categoryId }, include: { type: true } });
     if (!category || category.type.name.toLowerCase() !== 'income') {
@@ -48,7 +43,7 @@ export class IncomeService {
     const data = {
       concept: dto.concept,
       amount: dto.amount,
-      date: this.toUtcNoon(dto.date),
+      date: toUtcNoon(dto.date),
       note: dto.note,
       currency: dto.currency || 'ARS',
       categoryId: dto.categoryId,
@@ -71,7 +66,7 @@ export class IncomeService {
     const data = {
       concept: dto.concept,
       amount: dto.amount,
-      date: dto.date ? this.toUtcNoon(dto.date) : undefined,
+      date: dto.date ? toUtcNoon(dto.date) : undefined,
       note: dto.note,
       currency: dto.currency,
       categoryId: dto.categoryId,

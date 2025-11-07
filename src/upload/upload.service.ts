@@ -2,6 +2,8 @@ import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import * as ExcelJS from 'exceljs';
 import { Prisma } from '@prisma/client';
+import { normalizeCategoryName } from '../common/utils/category.util';
+import type { Express } from 'express';
 
 @Injectable()
 export class UploadService {
@@ -196,7 +198,7 @@ export class UploadService {
         continue;
       }
 
-      const categoria = this.toLowerCategoryName(row['categoria'] || row['category'] || row['Categoria'] || row['Category']);
+      const categoria = normalizeCategoryName(row['categoria'] || row['category'] || row['Categoria'] || row['Category']);
       const concepto = this.sanitizeString(row['concepto'] || row['Concepto'] || row['concept'] || row['Concept'] || row['nombre'] || row['Nombre']);
       const rawNota = this.sanitizeString(row['nota'] || row['Nota'] || row['notes'] || row['descripcion'] || row['Descripcion']);
       const currency = (this.sanitizeString(row['currency'] || row['Currency']) || 'ARS').toUpperCase();
@@ -312,7 +314,7 @@ export class UploadService {
           continue;
         }
 
-        const categoryName = this.toLowerCategoryName(record.categoria || record.categoryName || record.category?.name);
+        const categoryName = normalizeCategoryName(record.categoria || record.categoryName || record.category?.name);
         if (!categoryName) {
           pushError(i, record, 'La categoría es obligatoria en cada registro.');
           continue;
@@ -439,11 +441,6 @@ export class UploadService {
     const str = String(value).trim();
     // Remove potentially harmful characters and limit length
     return str.length > 500 ? str.substring(0, 500) : str;
-  }
-
-  private toLowerCategoryName(value: any): string | null {
-    const sanitized = this.sanitizeString(value);
-    return sanitized ? sanitized.toLowerCase() : null;
   }
 
   private parseNumber(value: any): number | null {

@@ -9,6 +9,7 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { UploadService } from './upload.service';
 import { ApiConsumes, ApiTags } from '@nestjs/swagger';
+import type { Express } from 'express';
 
 @ApiTags('upload')
 @Controller('upload')

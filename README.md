@@ -1,17 +1,19 @@
 # Gastos-API
 
-Backend para pagina de gestion de gastos - API REST con NestJS, Prisma y PostgreSQL
+Backend para página de gestión de gastos - API REST con NestJS, Prisma y PostgreSQL.
+
+> Consulta `../DEV_NOTES.md` para convenciones de desarrollo y checklist de QA.
 
 ## Características
 
-- ✅ API REST con NestJS
-- ✅ Base de datos PostgreSQL con Prisma ORM
-- ✅ Módulo de carga de archivos Excel (Upload)
-- ✅ Módulo de gestión de registros (Records)
-- ✅ Módulo de análisis de datos (Analytics)
-- ✅ Validación de datos con class-validator
-- ✅ Parseo de archivos Excel con xlsx
-- ✅ Arquitectura limpia (Controllers, Services, Modules)
+- API REST con NestJS
+- Base de datos PostgreSQL con Prisma ORM
+- Módulo de carga de archivos Excel (Upload)
+- Módulo de gestión de registros (Records)
+- Módulo de análisis de datos (Analytics)
+- Validación de datos con class-validator
+- Parseo de archivos Excel con xlsx
+- Arquitectura limpia (Controllers, Services, Modules)
 
 ## Requisitos
 

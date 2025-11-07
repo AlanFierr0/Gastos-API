@@ -1,6 +1,7 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateCategoryDto } from './dto/create-category.dto';
+import { normalizeCategoryName } from '../common/utils/category.util';
 
 @Injectable()
 export class CategoriesService {
@@ -13,23 +14,22 @@ export class CategoriesService {
     });
   }
 
-  private normalizeName(name: string) {
-    return String(name || '').trim().toLowerCase();
-  }
-
   create(dto: CreateCategoryDto) {
     return this.prisma.$transaction(async (tx) => {
       let typeId = dto.typeId;
       if (!typeId) {
-        const name = this.normalizeName(dto.typeName || 'expense');
+        const normalizedTypeName = normalizeCategoryName(dto.typeName) ?? 'expense';
         const type = await tx.categoryType.upsert({
-          where: { name },
+          where: { name: normalizedTypeName },
           update: {},
-          create: { name },
+          create: { name: normalizedTypeName },
         });
         typeId = type.id;
       }
-      const normalizedName = this.normalizeName(dto.name);
+      const normalizedName = normalizeCategoryName(dto.name);
+      if (!normalizedName) {
+        throw new BadRequestException('Category name cannot be empty');
+      }
       const existing = await tx.category.findFirst({
         where: { name: normalizedName, typeId },
         include: { type: true },

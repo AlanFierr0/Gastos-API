@@ -4,6 +4,7 @@ import { CreateExpenseDto } from './dto/create-expense.dto';
 import { UpdateExpenseDto } from './dto/update-expense.dto';
 import { QueryExpenseDto } from './dto/query-expense.dto';
 import { Prisma } from '@prisma/client';
+import { toUtcNoon } from '../common/utils/date.util';
 
 @Injectable()
 export class ExpensesService {
@@ -31,13 +32,6 @@ export class ExpensesService {
     return expense;
   }
 
-  private toUtcNoon(dateIso: string): Date {
-    const d = new Date(dateIso);
-    // Normalize to 12:00 UTC to avoid boundary shifts
-    d.setUTCHours(12, 0, 0, 0);
-    return d;
-  }
-
   async create(dto: CreateExpenseDto) {
     const category = await this.prisma.category.findUnique({ where: { id: dto.categoryId }, include: { type: true } });
     if (!category || category.type.name.toLowerCase() !== 'expense') {
@@ -48,7 +42,7 @@ export class ExpensesService {
       categoryId: dto.categoryId,
       concept: dto.concept,
       amount: dto.amount,
-      date: this.toUtcNoon(dto.date),
+      date: toUtcNoon(dto.date),
       note: dto.note,
       currency: dto.currency || 'ARS',
     } as unknown as Prisma.ExpenseUncheckedCreateInput;
@@ -72,7 +66,7 @@ export class ExpensesService {
       categoryId: dto.categoryId,
       concept: dto.concept,
       amount: dto.amount,
-      date: dto.date ? this.toUtcNoon(dto.date) : undefined,
+      date: dto.date ? toUtcNoon(dto.date) : undefined,
       note: dto.note,
       currency: dto.currency,
     } as unknown as Prisma.ExpenseUncheckedUpdateInput;
