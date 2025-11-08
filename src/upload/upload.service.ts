@@ -464,7 +464,12 @@ export class UploadService {
   // Helper function to normalize any date to first day of month (only month and year)
   private normalizeDateToMonthYear(date: Date | string): Date {
     const d = typeof date === 'string' ? new Date(date) : date;
-    return new Date(Date.UTC(d.getFullYear(), d.getMonth(), 1, 12, 0, 0, 0));
+    if (Number.isNaN(d.getTime())) {
+      throw new Error(`Invalid date: ${date}`);
+    }
+    // Normalize to day 1, month, year, and set time to 12:00:00 UTC
+    // This ensures we only store month and year, not the specific day or time
+    return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1, 12, 0, 0, 0));
   }
 
   private detectPlanillaFormat(arrayData: any[][], worksheet: ExcelJS.Worksheet): boolean {
