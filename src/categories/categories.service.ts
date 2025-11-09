@@ -38,7 +38,10 @@ export class CategoriesService {
         return existing;
       }
       return tx.category.create({
-        data: { name: normalizedName, typeId },
+        data: { 
+          name: normalizedName, 
+          typeId,
+        },
         include: { type: true },
       });
     });

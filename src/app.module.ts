@@ -8,6 +8,9 @@ import { IncomeModule } from './income/income.module';
 import { CategoriesModule } from './categories/categories.module';
 import { ExchangeRatesModule } from './exchange-rates/exchange-rates.module';
 import { FAConfigModule } from './fa-config/fa-config.module';
+import { InvestmentsModule } from './investments/investments.module';
+import { PricesModule } from './prices/prices.module';
+import { InvestmentOperationsModule } from './investment-operations/investment-operations.module';
 
 @Module({
   imports: [
@@ -22,6 +25,9 @@ import { FAConfigModule } from './fa-config/fa-config.module';
     CategoriesModule,
     ExchangeRatesModule,
     FAConfigModule,
+    InvestmentsModule,
+    PricesModule,
+    InvestmentOperationsModule,
   ],
 })
 export class AppModule {}

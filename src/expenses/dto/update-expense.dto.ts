@@ -1,5 +1,6 @@
-import { IsUUID, IsNumber, IsISO8601, IsOptional, IsString, Matches } from 'class-validator';
+import { IsUUID, IsNumber, IsISO8601, IsOptional, IsString, Matches, IsEnum } from 'class-validator';
 import { Transform } from 'class-transformer';
+import { ExpenseType } from '@prisma/client';
 
 export class UpdateExpenseDto {
   @IsOptional()
@@ -27,6 +28,10 @@ export class UpdateExpenseDto {
   @Matches(/^[A-Z]{3}$/)
   @Transform(({ value }) => (typeof value === 'string' ? value.toUpperCase() : value))
   currency?: string;
+
+  @IsOptional()
+  @IsEnum(ExpenseType)
+  expenseType?: ExpenseType;
 }
 
 

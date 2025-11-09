@@ -40,12 +40,12 @@ export class UploadController {
   }
 
   @Post('confirm')
-  async confirmImport(@Body() body: { records: any[]; errors?: any[]; warnings?: any[] }) {
+  async confirmImport(@Body() body: { records: any[]; errors?: any[]; warnings?: any[]; expenseTypeMap?: Record<string, string> }) {
     if (!body.records || !Array.isArray(body.records)) {
       throw new BadRequestException('Records array is required');
     }
 
-    return this.uploadService.saveParsedRecords(body.records, body.errors || [], body.warnings || []);
+    return this.uploadService.saveParsedRecords(body.records, body.errors || [], body.warnings || [], body.expenseTypeMap || {});
   }
 
   @Post('excel')

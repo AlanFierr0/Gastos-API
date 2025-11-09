@@ -19,17 +19,25 @@ model CategoryType {
   categories Category[]
 }
 
+enum ExpenseType {
+  MENSUAL
+  SEMESTRAL
+  ANUAL
+  EXCEPCIONAL
+}
+
 model Category {
-  id     String @id @default(uuid())
-  name   String @unique
-  typeId String
-  type   CategoryType @relation(fields: [typeId], references: [id])
-  expenses Expense[]
-  income Income[]
+  id         String      @id @default(uuid())
+  name       String      @unique
+  typeId     String
+  type       CategoryType @relation(fields: [typeId], references: [id])
+  expenses   Expense[]
+  income     Income[]
+  investments Investment[]
 }
 
 model Expense {
-  id         String   @id @default(uuid())
+  id         String      @id @default(uuid())
   categoryId String
   concept    String
   amount     Float
@@ -37,6 +45,7 @@ model Expense {
   note       String?
   createdAt  DateTime @default(now())
   currency   String   @default("ARS")
+  expenseType ExpenseType? // Type of expense for forecast
 
   category Category @relation(fields: [categoryId], references: [id])
 }
@@ -53,6 +62,55 @@ model Income {
   isRecurring Boolean  @default(false)
 
   category Category @relation(fields: [categoryId], references: [id])
+}
+
+model Investment {
+  id              String   @id @default(uuid())
+  categoryId      String
+  concept         String   // Nombre del concepto (ej: BTC, USD, AAPL)
+  currentAmount   Float    // Cantidad actual (sin símbolo de peso)
+  currentPrice    Float?   // Precio actual por unidad
+  tag             String?  // Tag opcional
+  originalAmount  Float    // Inversión original
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  category Category @relation(fields: [categoryId], references: [id])
+  operations InvestmentOperation[]
+}
+
+enum OperationType {
+  COMPRA
+  VENTA
+  AJUSTE
+}
+
+model InvestmentOperation {
+  id            String        @id @default(uuid())
+  investmentId  String
+  type          OperationType // COMPRA, VENTA, AJUSTE
+  amount        Float         // Cantidad modificada (positiva para compra, negativa para venta)
+  price         Float?        // Precio por unidad al momento de la operación
+  note          String?       // Nota opcional
+  createdAt     DateTime      @default(now())
+
+  investment Investment @relation(fields: [investmentId], references: [id], onDelete: Cascade)
+
+  @@index([investmentId])
+  @@index([createdAt])
+}
+
+model Price {
+  id        String   @id @default(uuid())
+  symbol    String   @unique
+  type      String   // 'crypto' | 'equity'
+  price     Float
+  source    String   // 'coingecko' | 'yahoo'
+  updatedAt DateTime @default(now()) @updatedAt
+  createdAt DateTime @default(now())
+
+  @@index([symbol])
+  @@index([type])
 }
 
 model FinancialAnalysisConfig {

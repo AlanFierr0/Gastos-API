@@ -284,7 +284,7 @@ export class UploadService {
     return null;
   }
 
-  async saveParsedRecords(records: any[], parseErrors: any[] = [], parseWarnings: any[] = []) {
+  async saveParsedRecords(records: any[], parseErrors: any[] = [], parseWarnings: any[] = [], expenseTypeMap: Record<string, string> = {}) {
     const savedRecords: any[] = [];
     const saveErrors: any[] = [];
     const saveWarnings: any[] = [];
@@ -389,6 +389,10 @@ export class UploadService {
             data: { name: categoryName, typeId: expenseType.id },
           }));
 
+          // Get expenseType from map using category::concept key, default to MENSUAL
+          const conceptKey = `${categoryName.toLowerCase()}::${conceptName.toLowerCase()}`;
+          const expenseTypeValue = expenseTypeMap[conceptKey] || 'MENSUAL';
+
           const expenseData = {
             categoryId: category.id,
             concept: conceptName,
@@ -396,6 +400,7 @@ export class UploadService {
             date: normalizedDate,
             note: notesValue || null,
             currency: record.currency,
+            expenseType: expenseTypeValue as any,
           } as unknown as Prisma.ExpenseUncheckedCreateInput;
 
           const created = await this.prisma.expense.create({

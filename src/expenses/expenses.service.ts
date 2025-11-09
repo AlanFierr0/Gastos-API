@@ -45,6 +45,7 @@ export class ExpensesService {
       date: toUtcNoon(dto.date),
       note: dto.note,
       currency: dto.currency || 'ARS',
+      expenseType: dto.expenseType || undefined,
     } as unknown as Prisma.ExpenseUncheckedCreateInput;
 
     return this.prisma.expense.create({
@@ -69,6 +70,7 @@ export class ExpensesService {
       date: dto.date ? toUtcNoon(dto.date) : undefined,
       note: dto.note,
       currency: dto.currency,
+      expenseType: dto.expenseType,
     } as unknown as Prisma.ExpenseUncheckedUpdateInput;
 
     return this.prisma.expense.update({
