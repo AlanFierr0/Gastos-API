@@ -46,6 +46,7 @@ export class InvestmentsService {
       currentPrice: dto.currentPrice,
       tag: dto.tag || null,
       originalAmount: dto.originalAmount,
+      custodyEntity: dto.custodyEntity || null,
     } as unknown as Prisma.InvestmentUncheckedCreateInput;
 
     return this.prisma.investment.create({
@@ -80,6 +81,7 @@ export class InvestmentsService {
       currentPrice: dto.currentPrice,
       tag: dto.tag,
       originalAmount: dto.originalAmount,
+      custodyEntity: dto.custodyEntity,
     } as unknown as Prisma.InvestmentUncheckedUpdateInput;
 
     return this.prisma.investment.update({

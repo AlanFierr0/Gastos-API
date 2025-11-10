@@ -28,5 +28,9 @@ export class UpdateInvestmentDto {
   @IsNumber()
   @Transform(({ value }) => (typeof value === 'string' ? parseFloat(value) : value))
   originalAmount?: number;
+
+  @IsOptional()
+  @IsString()
+  custodyEntity?: string;
 }
 
