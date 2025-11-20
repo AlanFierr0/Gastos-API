@@ -1,9 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -14,9 +8,99 @@ datasource db {
 }
 
 model CategoryType {
-  id   String @id @default(uuid())
-  name String @unique
+  id         String     @id @default(uuid())
+  name       String     @unique
   categories Category[]
+}
+
+model Category {
+  id          String       @id @default(uuid())
+  name        String       @unique
+  typeId      String
+  type        CategoryType @relation(fields: [typeId], references: [id])
+  expenses    Expense[]
+  income      Income[]
+  investments Investment[]
+}
+
+model Expense {
+  id          String       @id @default(uuid())
+  categoryId  String
+  amount      Float
+  date        DateTime
+  note        String?
+  createdAt   DateTime     @default(now())
+  currency    String       @default("ARS")
+  concept     String
+  expenseType ExpenseType?
+  category    Category     @relation(fields: [categoryId], references: [id])
+}
+
+model Income {
+  id          String   @id @default(uuid())
+  amount      Float
+  date        DateTime
+  note        String?
+  createdAt   DateTime @default(now())
+  currency    String   @default("ARS")
+  categoryId  String
+  isRecurring Boolean  @default(false)
+  concept     String
+  category    Category @relation(fields: [categoryId], references: [id])
+}
+
+model Investment {
+  id             String                @id @default(uuid())
+  categoryId     String
+  concept        String
+  currentAmount  Float
+  tag            String?
+  originalAmount Float
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+  currentPrice   Float?
+  custodyEntity  String?
+  category       Category              @relation(fields: [categoryId], references: [id])
+  operations     InvestmentOperation[]
+}
+
+model InvestmentOperation {
+  id           String        @id @default(uuid())
+  investmentId String
+  type         OperationType
+  amount       Float
+  price        Float?
+  note         String?
+  createdAt    DateTime      @default(now())
+  investment   Investment    @relation(fields: [investmentId], references: [id], onDelete: Cascade)
+
+  @@index([investmentId])
+  @@index([createdAt])
+}
+
+model Price {
+  id        String   @id @default(uuid())
+  symbol    String   @unique
+  type      String
+  price     Float
+  source    String
+  updatedAt DateTime @default(now()) @updatedAt
+  createdAt DateTime @default(now())
+
+  @@index([symbol])
+  @@index([type])
+}
+
+model FinancialAnalysisConfig {
+  id              String   @id @default("default")
+  fixed           Json     @default("[]")
+  wellbeing       Json     @default("[]")
+  saving          Json     @default("[]")
+  targetFixed     Float    @default(50)
+  targetWellbeing Float    @default(30)
+  targetSaving    Float    @default(20)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 }
 
 enum ExpenseType {
@@ -26,102 +110,8 @@ enum ExpenseType {
   EXCEPCIONAL
 }
 
-model Category {
-  id         String      @id @default(uuid())
-  name       String      @unique
-  typeId     String
-  type       CategoryType @relation(fields: [typeId], references: [id])
-  expenses   Expense[]
-  income     Income[]
-  investments Investment[]
-}
-
-model Expense {
-  id         String      @id @default(uuid())
-  categoryId String
-  concept    String
-  amount     Float
-  date       DateTime
-  note       String?
-  createdAt  DateTime @default(now())
-  currency   String   @default("ARS")
-  expenseType ExpenseType? // Type of expense for forecast
-
-  category Category @relation(fields: [categoryId], references: [id])
-}
-
-model Income {
-  id          String   @id @default(uuid())
-  categoryId  String
-  concept     String
-  amount      Float
-  date        DateTime
-  note        String?
-  createdAt   DateTime @default(now())
-  currency    String   @default("ARS")
-  isRecurring Boolean  @default(false)
-
-  category Category @relation(fields: [categoryId], references: [id])
-}
-
-model Investment {
-  id              String   @id @default(uuid())
-  categoryId      String
-  concept         String   // Nombre del concepto (ej: BTC, USD, AAPL)
-  currentAmount   Float    // Cantidad actual (sin símbolo de peso)
-  currentPrice    Float?   // Precio actual por unidad
-  tag             String?  // Tag opcional
-  originalAmount  Float    // Inversión original
-  custodyEntity   String?  // Entidad de custodia (ej: Binance, IOL, etc.)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-
-  category Category @relation(fields: [categoryId], references: [id])
-  operations InvestmentOperation[]
-}
-
 enum OperationType {
   COMPRA
   VENTA
   AJUSTE
-}
-
-model InvestmentOperation {
-  id            String        @id @default(uuid())
-  investmentId  String
-  type          OperationType // COMPRA, VENTA, AJUSTE
-  amount        Float         // Cantidad modificada (positiva para compra, negativa para venta)
-  price         Float?        // Precio por unidad al momento de la operación
-  note          String?       // Nota opcional
-  createdAt     DateTime      @default(now())
-
-  investment Investment @relation(fields: [investmentId], references: [id], onDelete: Cascade)
-
-  @@index([investmentId])
-  @@index([createdAt])
-}
-
-model Price {
-  id        String   @id @default(uuid())
-  symbol    String   @unique
-  type      String   // 'crypto' | 'equity'
-  price     Float
-  source    String   // 'coingecko' | 'yahoo'
-  updatedAt DateTime @default(now()) @updatedAt
-  createdAt DateTime @default(now())
-
-  @@index([symbol])
-  @@index([type])
-}
-
-model FinancialAnalysisConfig {
-  id             String   @id @default("default")
-  fixed          Json     @default("[]") // Array de nombres de categorías en minúsculas
-  wellbeing      Json     @default("[]")
-  saving         Json     @default("[]")
-  targetFixed    Float    @default(50)
-  targetWellbeing Float   @default(30)
-  targetSaving   Float    @default(20)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
 }

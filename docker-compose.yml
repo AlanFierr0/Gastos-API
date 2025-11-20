@@ -1,8 +1,6 @@
-version: '3.8'
-
 services:
   postgres:
-    image: postgres:latest
+    image: postgres:14
     container_name: gastos-db
     command: ["postgres", "-c", "port=6544"]
     ports:
@@ -13,21 +11,6 @@ services:
       POSTGRES_DB: ${DB_NAME}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    restart: unless-stopped
-
-  api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: gastos-api
-    environment:
-      NODE_ENV: production
-      PORT: ${PORT:-6543}
-      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@postgres:${DB_PORT}/${DB_NAME}?schema=public
-    depends_on:
-      - postgres
-    ports:
-      - "${PORT:-6543}:6543"
     restart: unless-stopped
 
 volumes:
