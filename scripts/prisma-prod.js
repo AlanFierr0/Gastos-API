@@ -1,5 +1,5 @@
 /**
- * Script para ejecutar comandos de Prisma usando DATABASE_URL (Supabase)
+ * Script para ejecutar comandos de Prisma usando DATABASE_URL
  * 
  * Uso: node scripts/prisma-prod.js <comando>
  * Ejemplo: node scripts/prisma-prod.js migrate deploy
@@ -25,7 +25,7 @@ if (!prodUrl) {
   process.exit(1);
 }
 
-console.log('☁️  Usando base de datos SUPABASE:', prodUrl.replace(/:[^:@]+@/, ':****@'));
+console.log('☁️  Usando base de datos:', prodUrl.replace(/:[^:@]+@/, ':****@'));
 console.log('📝 Ejecutando:', `prisma ${command}\n`);
 
 try {
@@ -37,4 +37,5 @@ try {
 } catch (error) {
   process.exit(1);
 }
+
 

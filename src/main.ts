@@ -19,12 +19,13 @@ async function bootstrap() {
     transform: true,
   }));
 
-  // Enable CORS with explicit dev origins
+  // Enable CORS with explicit dev origins and Docker support
   app.enableCors({
     origin: [
       'http://localhost:5173',
       'http://127.0.0.1:5173',
       'http://localhost:3000', // swagger or same-origin tools
+      'http://app:5173', // Docker internal network
     ],
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],

@@ -11,6 +11,12 @@ RUN npm ci --omit=dev=false
 FROM deps AS build
 COPY . .
 # Ensure Prisma schema is available and client is generated before build
+# Recibir variables del .env como build args
+ARG DB_USER=postgres
+ARG DB_PASSWORD=postgres
+ARG DB_NAME=gastos
+# Construir DATABASE_URL con las variables (usando localhost durante build)
+ENV DATABASE_URL="postgresql://${DB_USER}:${DB_PASSWORD}@localhost:5432/${DB_NAME}?schema=public"
 RUN npx prisma generate
 RUN npm run build
 
@@ -24,6 +30,7 @@ COPY prisma ./prisma
 COPY --from=build /app/dist ./dist
 
 EXPOSE 6543
-CMD ["sh", "-c", "npx prisma generate && node dist/main.js"]
+# El comando de migración se ejecuta en docker-compose para mejor control
+CMD ["node", "dist/main.js"]
 
 
