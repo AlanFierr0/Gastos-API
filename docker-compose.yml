@@ -1,0 +1,61 @@
+services:
+  # Base de datos PostgreSQL
+  postgres:
+    image: postgres:14
+    container_name: gastos-db
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME:-gastos_db}
+    ports:
+      - "${DB_PORT:-6544}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # API Backend (NestJS)
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        DB_USER: ${DB_USER:-postgres}
+        DB_PASSWORD: ${DB_PASSWORD:-postgres}
+        DB_NAME: ${DB_NAME:-gastos_db}
+    container_name: gastos-api
+    ports:
+      - "${API_PORT:-6543}:6543"
+    environment:
+      - NODE_ENV=production
+      - PORT=6543
+      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/${DB_NAME:-gastos_db}?schema=public
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    volumes:
+      - ./prisma:/app/prisma
+    command: sh -c "npx prisma generate && npx prisma migrate deploy && node dist/main.js"
+
+  # Frontend (React + Vite)
+  app:
+    build:
+      context: ../Gastos-APP
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: http://localhost:${API_PORT:-6543}
+    container_name: gastos-app
+    ports:
+      - "${APP_PORT:-5173}:5173"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+
