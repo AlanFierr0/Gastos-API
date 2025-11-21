@@ -1,4 +1,4 @@
-import { IsUUID, IsNumber, IsOptional, IsString } from 'class-validator';
+import { IsUUID, IsNumber, IsOptional, IsString, IsDateString } from 'class-validator';
 import { Transform } from 'class-transformer';
 
 export class UpdateInvestmentDto {
@@ -28,6 +28,16 @@ export class UpdateInvestmentDto {
   @IsNumber()
   @Transform(({ value }) => (typeof value === 'string' ? parseFloat(value) : value))
   originalAmount?: number;
+
+  @IsOptional()
+  @IsDateString()
+  @Transform(({ value }) => {
+    if (value && typeof value === 'string') {
+      return new Date(value).toISOString();
+    }
+    return value;
+  })
+  date?: string | Date;
 
   @IsOptional()
   @IsString()

@@ -1,4 +1,5 @@
-import { IsEnum, IsNotEmpty, IsNumber, IsOptional, IsString, IsUUID } from 'class-validator';
+import { IsEnum, IsNotEmpty, IsNumber, IsOptional, IsString, IsUUID, IsDateString } from 'class-validator';
+import { Transform } from 'class-transformer';
 
 export enum OperationType {
   COMPRA = 'COMPRA',
@@ -22,6 +23,15 @@ export class CreateInvestmentOperationDto {
   @IsNumber()
   @IsOptional()
   price?: number;
+
+  @IsDateString()
+  @Transform(({ value }) => {
+    if (typeof value === 'string') {
+      return new Date(value).toISOString();
+    }
+    return value;
+  })
+  date: string | Date;
 
   @IsString()
   @IsOptional()

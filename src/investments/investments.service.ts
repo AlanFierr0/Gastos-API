@@ -8,11 +8,74 @@ import { Prisma } from '@prisma/client';
 export class InvestmentsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  findAll() {
-    return this.prisma.investment.findMany({
+  async findAll() {
+    const investments = await this.prisma.investment.findMany({
       orderBy: { createdAt: 'desc' },
-      include: { category: { include: { type: true } } },
+      include: { 
+        category: { include: { type: true } },
+        operations: {
+          orderBy: { date: 'asc' },
+        },
+      },
     });
+
+    // Calcular el costo promedio ponderado para cada inversión
+    return investments.map(inv => {
+      const averageCost = this.calculateAverageCost(inv);
+      return {
+        ...inv,
+        averageCost,
+      };
+    });
+  }
+
+  /**
+   * Calcula el costo promedio ponderado basado en todas las compras
+   * Incluye la inversión original y todas las operaciones de compra ordenadas por fecha
+   */
+  private calculateAverageCost(investment: any): number {
+    const purchases: Array<{ amount: number; price: number; date: Date }> = [];
+
+    // Agregar la inversión original
+    if (investment.originalAmount > 0 && investment.currentAmount > 0) {
+      const originalPrice = investment.originalAmount / investment.currentAmount;
+      purchases.push({
+        amount: investment.currentAmount,
+        price: originalPrice,
+        date: new Date(investment.date),
+      });
+    }
+
+    // Agregar todas las compras ordenadas por fecha
+    const buyOperations = investment.operations
+      ?.filter((op: any) => op.type === 'COMPRA' && op.price && op.price > 0)
+      .sort((a: any, b: any) => new Date(a.date || a.createdAt).getTime() - new Date(b.date || b.createdAt).getTime()) || [];
+
+    for (const op of buyOperations) {
+      purchases.push({
+        amount: op.amount,
+        price: op.price,
+        date: new Date(op.date || op.createdAt),
+      });
+    }
+
+    if (purchases.length === 0) {
+      return 0;
+    }
+
+    // Ordenar todas las compras por fecha
+    purchases.sort((a, b) => a.date.getTime() - b.date.getTime());
+
+    // Calcular costo promedio ponderado de todas las compras
+    let totalCost = 0;
+    let totalAmount = 0;
+
+    for (const purchase of purchases) {
+      totalCost += purchase.amount * purchase.price;
+      totalAmount += purchase.amount;
+    }
+
+    return totalAmount > 0 ? totalCost / totalAmount : 0;
   }
 
   async findOne(id: string) {
@@ -46,6 +109,7 @@ export class InvestmentsService {
       currentPrice: dto.currentPrice,
       tag: dto.tag || null,
       originalAmount: dto.originalAmount,
+      date: dto.date ? new Date(dto.date) : new Date(),
       custodyEntity: dto.custodyEntity || null,
     } as unknown as Prisma.InvestmentUncheckedCreateInput;
 
@@ -74,7 +138,7 @@ export class InvestmentsService {
       }
     }
 
-    const data = {
+    const data: Prisma.InvestmentUncheckedUpdateInput = {
       categoryId: dto.categoryId,
       concept: dto.concept,
       currentAmount: dto.currentAmount,
@@ -82,7 +146,11 @@ export class InvestmentsService {
       tag: dto.tag,
       originalAmount: dto.originalAmount,
       custodyEntity: dto.custodyEntity,
-    } as unknown as Prisma.InvestmentUncheckedUpdateInput;
+    };
+
+    if (dto.date !== undefined) {
+      data.date = new Date(dto.date);
+    }
 
     return this.prisma.investment.update({
       where: { id },

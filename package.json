@@ -24,7 +24,13 @@
     "prisma:fix-sync": "node scripts/fix-migration-sync.js",
     "check:unused": "ts-prune",
     "db:verify": "node verify-connection.js",
-    "db:verify:local": "cross-env DATABASE_URL=$DATABASE_URL_LOCAL node verify-connection.js"
+    "db:verify:local": "cross-env DATABASE_URL=$DATABASE_URL_LOCAL node verify-connection.js",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down",
+    "docker:rebuild": "docker-compose down && docker-compose up --build -d",
+    "docker:restart": "docker-compose restart",
+    "docker:logs": "docker-compose logs -f",
+    "docker:update": "docker-compose down && docker-compose up --build -d"
   },
   "keywords": [],
   "author": "",

@@ -41,6 +41,7 @@ export class InvestmentOperationsService {
           type: createDto.type,
           amount: createDto.amount,
           price: createDto.price,
+          date: createDto.date ? new Date(createDto.date) : new Date(),
           note: createDto.note,
         },
         include: {
@@ -85,7 +86,7 @@ export class InvestmentOperationsService {
           },
         },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { date: 'desc' },
     });
   }
 
@@ -120,7 +121,7 @@ export class InvestmentOperationsService {
       // Obtener todas las operaciones de esta inversión
       const allOperations = await this.prisma.investmentOperation.findMany({
         where: { investmentId: operation.investmentId },
-        orderBy: { createdAt: 'asc' },
+        orderBy: { date: 'asc' },
       });
 
       // Obtener la inversión original
@@ -159,9 +160,14 @@ export class InvestmentOperationsService {
       });
     }
 
+    const updateData: any = { ...updateDto };
+    if (updateDto.date !== undefined) {
+      updateData.date = new Date(updateDto.date);
+    }
+
     return this.prisma.investmentOperation.update({
       where: { id },
-      data: updateDto,
+      data: updateData,
     });
   }
 
@@ -171,7 +177,7 @@ export class InvestmentOperationsService {
     // Recalcular la cantidad de la inversión sin esta operación
     const allOperations = await this.prisma.investmentOperation.findMany({
       where: { investmentId: operation.investmentId },
-      orderBy: { createdAt: 'asc' },
+      orderBy: { date: 'asc' },
     });
 
     const investment = await this.prisma.investment.findUnique({

@@ -58,4 +58,10 @@ services:
 
 volumes:
   postgres_data:
+    name: gastos-db-data
+    external: true
+    # Volumen nombrado explícitamente para persistencia
+    # Los datos NO se borran con 'docker-compose down'
+    # Solo se borran con 'docker-compose down -v' o 'docker volume rm'
+    # external: true significa que el volumen ya existe y Docker Compose no debe crearlo
 
