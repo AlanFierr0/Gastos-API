@@ -61,6 +61,8 @@ model Investment {
   updatedAt      DateTime              @updatedAt
   currentPrice   Float?
   custodyEntity  String?
+  x100           Boolean               @default(false)
+  gbp            Boolean               @default(false)
   category       Category              @relation(fields: [categoryId], references: [id])
   operations     InvestmentOperation[]
 }

@@ -300,13 +300,63 @@ export class PricesService {
 
   /**
    * Obtiene el precio actual de un símbolo
+   * Si no está en la base de datos, intenta obtenerlo desde la API
    */
   async getPrice(symbol: string): Promise<number | null> {
+    const normalizedSymbol = symbol.toUpperCase();
+    
+    // Primero buscar en la base de datos
     const price = await this.prisma.price.findUnique({
-      where: { symbol: symbol.toUpperCase() },
+      where: { symbol: normalizedSymbol },
     });
 
-    return price?.price || null;
+    if (price?.price) {
+      return price.price;
+    }
+
+    // Si no está en la base de datos, intentar obtenerlo desde la API
+    try {
+      // Determinar si es crypto o equity basado en el símbolo
+      // Los símbolos de tipo de cambio como GBPUSD=X son equity
+      const isCrypto = !normalizedSymbol.includes('=') && !normalizedSymbol.includes('.');
+      
+      let fetchedPrice: number | null = null;
+      
+      if (isCrypto) {
+        const cryptoPrices = await this.fetchCryptoPrices([normalizedSymbol]);
+        fetchedPrice = cryptoPrices.get(normalizedSymbol) || null;
+      } else {
+        const equityPrices = await this.fetchEquityPrices([normalizedSymbol]);
+        fetchedPrice = equityPrices.get(normalizedSymbol) || null;
+      }
+
+      // Si se obtuvo el precio, guardarlo en la base de datos
+      if (fetchedPrice && fetchedPrice > 0) {
+        try {
+          await this.prisma.price.upsert({
+            where: { symbol: normalizedSymbol },
+            update: { 
+              price: fetchedPrice,
+              type: isCrypto ? 'crypto' : 'equity',
+              source: isCrypto ? 'CoinGecko' : 'Yahoo Finance',
+            },
+            create: {
+              symbol: normalizedSymbol,
+              price: fetchedPrice,
+              type: isCrypto ? 'crypto' : 'equity',
+              source: isCrypto ? 'CoinGecko' : 'Yahoo Finance',
+            },
+          });
+        } catch (error) {
+          this.logger.error(`Error saving price for ${normalizedSymbol}: ${error.message}`);
+        }
+      }
+
+      return fetchedPrice;
+    } catch (error) {
+      this.logger.error(`Error fetching price for ${normalizedSymbol} from API: ${error.message}`);
+      return null;
+    }
   }
 
   /**

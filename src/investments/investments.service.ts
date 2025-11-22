@@ -111,6 +111,8 @@ export class InvestmentsService {
       originalAmount: dto.originalAmount,
       date: dto.date ? new Date(dto.date) : new Date(),
       custodyEntity: dto.custodyEntity || null,
+      x100: dto.x100 ?? false,
+      gbp: dto.gbp ?? false,
     } as unknown as Prisma.InvestmentUncheckedCreateInput;
 
     return this.prisma.investment.create({
@@ -150,6 +152,14 @@ export class InvestmentsService {
 
     if (dto.date !== undefined) {
       data.date = new Date(dto.date);
+    }
+
+    if (dto.x100 !== undefined) {
+      data.x100 = dto.x100;
+    }
+
+    if (dto.gbp !== undefined) {
+      data.gbp = dto.gbp;
     }
 
     return this.prisma.investment.update({

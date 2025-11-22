@@ -1,4 +1,4 @@
-import { IsUUID, IsNumber, IsOptional, IsString, IsDateString } from 'class-validator';
+import { IsUUID, IsNumber, IsOptional, IsString, IsDateString, IsBoolean } from 'class-validator';
 import { Transform } from 'class-transformer';
 
 export class UpdateInvestmentDto {
@@ -42,5 +42,25 @@ export class UpdateInvestmentDto {
   @IsOptional()
   @IsString()
   custodyEntity?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ value }) => {
+    if (typeof value === 'string') {
+      return value === 'true' || value === '1';
+    }
+    return Boolean(value);
+  })
+  x100?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ value }) => {
+    if (typeof value === 'string') {
+      return value === 'true' || value === '1';
+    }
+    return Boolean(value);
+  })
+  gbp?: boolean;
 }
 
