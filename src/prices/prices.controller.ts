@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Param } from '@nestjs/common';
+import { Controller, Get, Post, Param, Query } from '@nestjs/common';
 import { PricesService } from './prices.service';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 
@@ -34,6 +34,16 @@ export class PricesController {
   async getPrice(@Param('symbol') symbol: string) {
     const price = await this.pricesService.getPrice(symbol);
     return { symbol, price };
+  }
+
+  @Get('symbols/:type')
+  @ApiOperation({ summary: 'Obtener símbolos disponibles por tipo (crypto o equity). Si se proporciona query, busca en APIs externas.' })
+  @ApiResponse({ status: 200, description: 'Lista de símbolos disponibles' })
+  async getSymbols(
+    @Param('type') type: string,
+    @Query('query') query?: string
+  ) {
+    return this.pricesService.getAvailableSymbols(type.toLowerCase(), query);
   }
 }
 

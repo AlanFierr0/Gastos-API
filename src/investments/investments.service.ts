@@ -97,9 +97,9 @@ export class InvestmentsService {
     }
     
     // Verify that the category type is one of the investment types
-    const investmentTypes = ['moneda', 'equity', 'crypto'];
+    const investmentTypes = ['dolar', 'equity', 'crypto'];
     if (!investmentTypes.includes(category.type.name.toLowerCase())) {
-      throw new NotFoundException('Category must be of type "moneda", "equity", or "crypto"');
+      throw new NotFoundException('Category must be of type "dolar", "equity", or "crypto"');
     }
 
     const data = {
@@ -132,7 +132,7 @@ export class InvestmentsService {
       }
       
       // Verify that the category type is one of the investment types
-      const investmentTypes = ['moneda', 'equity', 'crypto'];
+      const investmentTypes = ['dolar', 'equity', 'crypto'];
       if (!investmentTypes.includes(category.type.name.toLowerCase())) {
         throw new NotFoundException('Category must be of type "moneda", "equity", or "crypto"');
       }

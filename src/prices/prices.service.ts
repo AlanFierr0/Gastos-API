@@ -319,6 +319,137 @@ export class PricesService {
   }
 
   /**
+   * Busca símbolos de crypto desde CoinGecko basado en un query
+   */
+  async searchCryptoSymbols(query: string): Promise<string[]> {
+    if (!query || query.length < 1) {
+      return [];
+    }
+
+    try {
+      const searchUrl = `https://api.coingecko.com/api/v3/search?query=${encodeURIComponent(query)}`;
+      const response = await fetch(searchUrl);
+      
+      if (!response.ok) {
+        this.logger.error(`Error searching crypto symbols: ${response.statusText}`);
+        return [];
+      }
+
+      const data = await response.json();
+      const coins = data?.coins || [];
+      
+      // Obtener símbolos únicos (usar symbol en mayúsculas)
+      const symbols = new Set<string>();
+      coins.slice(0, 20).forEach((coin: any) => {
+        if (coin.symbol) {
+          symbols.add(coin.symbol.toUpperCase());
+        }
+      });
+
+      return Array.from(symbols).sort();
+    } catch (error) {
+      this.logger.error(`Error in searchCryptoSymbols: ${error.message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Busca símbolos de equity basado en un query
+   * Usa una lista amplia de símbolos comunes de acciones
+   */
+  async searchEquitySymbols(query: string): Promise<string[]> {
+    if (!query || query.length < 1) {
+      return [];
+    }
+
+    try {
+      // Lista amplia de símbolos comunes de acciones (NYSE, NASDAQ)
+      const commonEquities = [
+        // Tech
+        'AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'META', 'NVDA', 'AMD', 'INTC', 'TSLA',
+        'NFLX', 'ADBE', 'CRM', 'ORCL', 'CSCO', 'IBM', 'QCOM', 'AVGO', 'TXN', 'MU',
+        // Finance
+        'JPM', 'BAC', 'WFC', 'C', 'GS', 'MS', 'V', 'MA', 'AXP', 'PYPL',
+        // Consumer
+        'WMT', 'TGT', 'COST', 'HD', 'LOW', 'NKE', 'SBUX', 'MCD', 'DIS', 'NKE',
+        // Healthcare
+        'JNJ', 'UNH', 'PFE', 'ABBV', 'TMO', 'ABT', 'DHR', 'BMY', 'AMGN', 'GILD',
+        // Energy
+        'XOM', 'CVX', 'SLB', 'EOG', 'COP', 'MPC', 'VLO', 'PSX', 'HAL', 'OXY',
+        // Industrial
+        'BA', 'CAT', 'GE', 'HON', 'RTX', 'LMT', 'NOC', 'GD', 'DE', 'EMR',
+        // Telecom
+        'VZ', 'T', 'TMUS', 'LUMN', 'USM', 'SHEN', 'CNSL', 'ATUS', 'ANET', 'CIEN',
+        // Utilities
+        'NEE', 'DUK', 'SO', 'AEP', 'SRE', 'EXC', 'XEL', 'PEG', 'WEC', 'ES',
+        // Materials
+        'LIN', 'APD', 'SHW', 'ECL', 'PPG', 'DD', 'DOW', 'FCX', 'NEM', 'VALE',
+        // Real Estate
+        'AMT', 'PLD', 'EQIX', 'PSA', 'WELL', 'SPG', 'O', 'DLR', 'EXPI', 'CBRE',
+        // Other
+        'PG', 'KO', 'PEP', 'PM', 'MO', 'CL', 'EL', 'UL', 'NVS', 'ASML'
+      ];
+
+      const queryUpper = query.toUpperCase();
+      const matching = commonEquities.filter(symbol => 
+        symbol.includes(queryUpper) || symbol.startsWith(queryUpper)
+      );
+
+      return matching.slice(0, 20);
+    } catch (error) {
+      this.logger.error(`Error in searchEquitySymbols: ${error.message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Obtiene símbolos disponibles por tipo (crypto o equity)
+   * Si se proporciona un query, busca en APIs externas
+   * Si no, devuelve símbolos de inversiones existentes y de la tabla de precios
+   */
+  async getAvailableSymbols(type: string, query?: string): Promise<string[]> {
+    const normalizedType = type.toLowerCase();
+    if (normalizedType !== 'crypto' && normalizedType !== 'equity') {
+      this.logger.warn(`Invalid type requested for getAvailableSymbols: ${type}`);
+      return [];
+    }
+
+    // Si hay un query, buscar en APIs externas
+    if (query && query.trim().length > 0) {
+      if (normalizedType === 'crypto') {
+        return await this.searchCryptoSymbols(query.trim());
+      } else if (normalizedType === 'equity') {
+        return await this.searchEquitySymbols(query.trim());
+      }
+    }
+
+    // Si no hay query, devolver símbolos de la base de datos
+    const symbols = new Set<string>();
+
+    // Obtener símbolos de inversiones existentes
+    const { crypto: cryptoSymbols, equity: equitySymbols } = await this.getSymbolsFromInvestments();
+    this.logger.debug(`Found ${cryptoSymbols.length} crypto symbols and ${equitySymbols.length} equity symbols from investments`);
+    
+    if (normalizedType === 'crypto') {
+      cryptoSymbols.forEach(s => symbols.add(s));
+    } else if (normalizedType === 'equity') {
+      equitySymbols.forEach(s => symbols.add(s));
+    }
+
+    // Obtener símbolos de la tabla de precios
+    const prices = await this.prisma.price.findMany({
+      where: { type: normalizedType },
+      select: { symbol: true },
+    });
+    this.logger.debug(`Found ${prices.length} prices in database for type ${normalizedType}`);
+    prices.forEach(p => symbols.add(p.symbol.toUpperCase()));
+
+    const result = Array.from(symbols).sort();
+    this.logger.log(`Returning ${result.length} available symbols for type ${normalizedType}`);
+    return result;
+  }
+
+  /**
    * Actualiza el precio actual de una inversión basado en el precio guardado
    */
   async updateInvestmentPrices(): Promise<{ updated: number; errors: number }> {
