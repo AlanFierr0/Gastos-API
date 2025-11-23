@@ -34,6 +34,7 @@ services:
       - NODE_ENV=production
       - PORT=6543
       - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/${DB_NAME:-gastos_db}?schema=public
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy

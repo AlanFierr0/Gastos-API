@@ -1,9 +1,12 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import * as ExcelJS from 'exceljs';
 import { Prisma } from '@prisma/client';
 import { normalizeCategoryName } from '../common/utils/category.util';
 import type { Express } from 'express';
+import OpenAI from 'openai';
+import axios from 'axios';
 
 @Injectable()
 export class UploadService {
@@ -11,7 +14,10 @@ export class UploadService {
   private readonly MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
   
 
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private configService: ConfigService
+  ) {}
   
 
   async parseExcel(file: Express.Multer.File) {
@@ -1103,6 +1109,637 @@ export class UploadService {
       errors,
       warnings,
     };
+  }
+
+  async extractTextFromPdf(file: Express.Multer.File): Promise<string> {
+    try {
+      // Importar pdf-parse con tipos
+      const pdfParse = require('pdf-parse');
+      const data = await pdfParse(file.buffer);
+      return data.text;
+    } catch (error) {
+      throw new BadRequestException(`Error al extraer texto del PDF: ${error.message}`);
+    }
+  }
+
+  /**
+   * Divide el texto del PDF en secciones basándose en el encabezado de tabla "FECHA DESCRIPCIÓN NRO. CUPÓN PESOS DÓLARES"
+   * Usa el renglón anterior como título de la sección
+   * Si no hay título, junta todos los gastos en una sección
+   * Si una sección tiene más de 1000 caracteres, la divide en partes
+   */
+  divideIntoSections(text: string): Array<{ title: string; content: string; index: number }> {
+    const sections: Array<{ title: string; content: string; index: number }> = [];
+    
+    // Cortar antes de "Legales y avisos"
+    const legalMarkers = [
+      'Legales y avisos',
+      'LEGALES Y AVISOS',
+      'Legales y Avisos',
+      'legales y avisos',
+      'LEGALES',
+      'Legales',
+      'Avisos Legales',
+      'AVISOS LEGALES'
+    ];
+
+    let processedText = text;
+    for (const marker of legalMarkers) {
+      const index = processedText.indexOf(marker);
+      if (index !== -1) {
+        processedText = processedText.substring(0, index).trim();
+        break;
+      }
+    }
+
+    const lines = processedText.split('\n');
+    const tableHeaderPattern = /^FECHA\s+DESCRIPCIÓN\s+NRO\.\s+CUPÓN\s+PESOS\s+DÓLARES$/i;
+    let sectionIndex = 0;
+    const MAX_SECTION_SIZE = 1000; // Máximo de caracteres por sección
+
+    // Primero, identificar todas las tablas y sus títulos
+    const tableSections: Array<{ title: string; startIndex: number; endIndex: number }> = [];
+    let lastValidTitle = ''; // Guardar el último título válido encontrado
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      
+      // Buscar el encabezado de la tabla
+      if (tableHeaderPattern.test(line)) {
+        // El título es el renglón anterior (si existe y no está vacío)
+        let sectionTitle = '';
+        if (i > 0) {
+          // Buscar hacia atrás el primer renglón válido que no sea el encabezado
+          for (let j = i - 1; j >= 0 && j >= i - 5; j--) { // Buscar hasta 5 líneas hacia atrás
+            const prevLine = lines[j].trim();
+            
+            // Filtrar líneas inválidas
+            if (prevLine.length === 0) continue;
+            if (tableHeaderPattern.test(prevLine)) continue;
+            if (/^[\d\s\$\.\,\-]+$/.test(prevLine)) continue; // Solo números y símbolos
+            if (prevLine.match(/^Página \d+ de \d+$/i)) continue;
+            if (prevLine.match(/^Sobre \(/i)) continue;
+            if (prevLine.match(/^Banco BBVA/i)) continue;
+            if (prevLine.match(/^Sobre \(\d+\)/i)) continue;
+            
+            // Filtrar caracteres corruptos o especiales (líneas con muchos caracteres no ASCII)
+            const nonAsciiRatio = (prevLine.match(/[^\x00-\x7F]/g) || []).length / prevLine.length;
+            if (nonAsciiRatio > 0.3 && !prevLine.match(/[áéíóúñÁÉÍÓÚÑ]/)) continue; // Permitir acentos pero no caracteres raros
+            
+            // Filtrar líneas que parezcan ser parte de una transacción (tienen fecha al principio)
+            if (/^\d{2}-[A-Za-z]{3}-\d{2}/.test(prevLine)) continue;
+            
+            // Filtrar líneas muy cortas o muy largas que probablemente no sean títulos
+            if (prevLine.length < 3 || prevLine.length > 150) continue;
+            
+            // Priorizar líneas que contengan "Consumos" seguido de un nombre
+            if (prevLine.match(/^Consumos\s+[A-Za-z\s]+$/i)) {
+              sectionTitle = prevLine;
+              lastValidTitle = prevLine; // Guardar como último título válido
+              break;
+            }
+            
+            // Si no encontramos "Consumos", usar la primera línea válida que encontremos
+            if (!sectionTitle) {
+              sectionTitle = prevLine;
+              lastValidTitle = prevLine; // Guardar como último título válido
+            }
+          }
+        }
+        
+        // Si no encontramos título válido, usar el título de la sección anterior
+        if (!sectionTitle || sectionTitle.length === 0) {
+          if (lastValidTitle && lastValidTitle.length > 0) {
+            sectionTitle = lastValidTitle;
+          } else {
+            sectionTitle = 'Transacciones'; // Solo si es la primera y no hay título previo
+          }
+        }
+
+        // Encontrar el final de esta tabla
+        let endIndex = i + 1;
+        for (let j = i + 1; j < lines.length; j++) {
+          const nextLine = lines[j].trim();
+          
+          // Si encontramos otro encabezado de tabla, detener
+          if (tableHeaderPattern.test(nextLine)) {
+            break;
+          }
+          
+          // Si encontramos "TOTAL CONSUMOS", incluirla y luego detener
+          if (nextLine.includes('TOTAL CONSUMOS')) {
+            endIndex = j + 1;
+            break;
+          }
+          
+          // Si encontramos otras secciones conocidas, detener
+          if (nextLine.includes('Impuestos, cargos e intereses') ||
+              nextLine.includes('Sus pagos y ajustes realizados') ||
+              nextLine.includes('DETALLE')) {
+            break;
+          }
+          
+          endIndex = j + 1;
+        }
+
+        tableSections.push({
+          title: sectionTitle,
+          startIndex: i,
+          endIndex: endIndex,
+        });
+      }
+    }
+
+    // Si no se encontraron tablas, crear una única sección con todo el contenido
+    if (tableSections.length === 0) {
+      const allContent = processedText;
+      // Dividir si es muy grande
+      if (allContent.length > MAX_SECTION_SIZE) {
+        const chunks = this.splitContentIntoChunks(allContent, MAX_SECTION_SIZE);
+        chunks.forEach((chunk, idx) => {
+          sections.push({
+            title: `Contenido completo (Parte ${idx + 1})`,
+            content: chunk,
+            index: sectionIndex++,
+          });
+        });
+      } else {
+        sections.push({
+          title: 'Contenido completo',
+          content: allContent,
+          index: sectionIndex++,
+        });
+      }
+      return sections;
+    }
+
+    // Agrupar tablas sin título en una sola sección
+    const groupedSections: Array<{ title: string; content: string }> = [];
+    let currentGroup: { title: string; content: string[] } | null = null;
+
+    for (const tableSection of tableSections) {
+      const sectionContent = lines.slice(tableSection.startIndex, tableSection.endIndex).join('\n');
+      
+      if (!tableSection.title || tableSection.title === '') {
+        // Si no hay título, agregar al grupo actual o crear uno nuevo
+        if (!currentGroup) {
+          currentGroup = {
+            title: 'Transacciones sin categoría',
+            content: [],
+          };
+        }
+        currentGroup.content.push(sectionContent);
+      } else {
+        // Si hay título, guardar el grupo anterior (si existe) y crear nueva sección
+        if (currentGroup) {
+          groupedSections.push({
+            title: currentGroup.title,
+            content: currentGroup.content.join('\n\n'),
+          });
+          currentGroup = null;
+        }
+        groupedSections.push({
+          title: tableSection.title,
+          content: sectionContent,
+        });
+      }
+    }
+
+    // Guardar el último grupo si existe
+    if (currentGroup) {
+      groupedSections.push({
+        title: currentGroup.title,
+        content: currentGroup.content.join('\n\n'),
+      });
+    }
+
+    // Dividir secciones grandes en chunks más pequeños
+    for (const groupedSection of groupedSections) {
+      if (groupedSection.content.length > MAX_SECTION_SIZE) {
+        const chunks = this.splitContentIntoChunks(groupedSection.content, MAX_SECTION_SIZE);
+        chunks.forEach((chunk, idx) => {
+          sections.push({
+            title: chunks.length > 1 
+              ? `${groupedSection.title} (Parte ${idx + 1})` 
+              : groupedSection.title,
+            content: chunk,
+            index: sectionIndex++,
+          });
+        });
+      } else {
+        sections.push({
+          title: groupedSection.title,
+          content: groupedSection.content,
+          index: sectionIndex++,
+        });
+      }
+    }
+
+    return sections;
+  }
+
+  /**
+   * Obtiene el tipo de cambio del dólar oficial (USD/ARS) desde múltiples fuentes
+   * @returns El tipo de cambio como número, o null si falla
+   */
+  private async getOfficialDollarRate(): Promise<number | null> {
+    try {
+      // Intentar primero con DolarAPI (API pública argentina)
+      try {
+        const dolarApiResponse = await axios.get('https://api.bluelytics.com.ar/v2/latest', {
+          timeout: 5000,
+        });
+        
+        if (dolarApiResponse.data?.oficial?.value_sell) {
+          const rate = dolarApiResponse.data.oficial.value_sell;
+          if (rate && rate > 0) {
+            return rate;
+          }
+        }
+        if (dolarApiResponse.data?.oficial?.value_buy) {
+          const rate = dolarApiResponse.data.oficial.value_buy;
+          if (rate && rate > 0) {
+            return rate;
+          }
+        }
+      } catch (dolarApiError) {
+        // Si DolarAPI falla, intentar con Yahoo Finance
+      }
+
+      // Intentar con Yahoo Finance (USDARS=X)
+      try {
+        const yahooResponse = await axios.get('https://query1.finance.yahoo.com/v8/finance/chart/USDARS=X', {
+          timeout: 5000,
+        });
+        
+        if (yahooResponse.data?.chart?.result?.[0]?.meta?.regularMarketPrice) {
+          const rate = yahooResponse.data.chart.result[0].meta.regularMarketPrice;
+          if (rate && rate > 0) {
+            return rate;
+          }
+        }
+      } catch (yahooError) {
+        // Si Yahoo Finance falla, intentar con CoinGecko
+      }
+
+      // Intentar con CoinGecko (usando el par USD/ARS)
+      try {
+        const coingeckoResponse = await axios.get('https://api.coingecko.com/api/v3/simple/price?ids=usd&vs_currencies=ars', {
+          timeout: 5000,
+        });
+        
+        if (coingeckoResponse.data?.usd?.ars) {
+          const rate = coingeckoResponse.data.usd.ars;
+          if (rate && rate > 0) {
+            return rate;
+          }
+        }
+      } catch (coingeckoError) {
+        // Si todos fallan, retornar null
+      }
+
+      // Si todas las APIs fallan, retornar null
+      return null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /**
+   * Divide el contenido en chunks más pequeños, intentando cortar en líneas completas
+   */
+  private splitContentIntoChunks(content: string, maxSize: number): string[] {
+    const chunks: string[] = [];
+    const lines = content.split('\n');
+    let currentChunk: string[] = [];
+    let currentSize = 0;
+
+    for (const line of lines) {
+      const lineSize = line.length + 1; // +1 por el \n
+
+      if (currentSize + lineSize > maxSize && currentChunk.length > 0) {
+        // Guardar el chunk actual y empezar uno nuevo
+        chunks.push(currentChunk.join('\n'));
+        currentChunk = [line];
+        currentSize = lineSize;
+      } else {
+        currentChunk.push(line);
+        currentSize += lineSize;
+      }
+    }
+
+    // Agregar el último chunk
+    if (currentChunk.length > 0) {
+      chunks.push(currentChunk.join('\n'));
+    }
+
+    return chunks.length > 0 ? chunks : [content];
+  }
+
+  async processMonthlySummary(summary: string) {
+    if (!summary || summary.trim().length === 0) {
+      throw new BadRequestException('El resumen mensual no puede estar vacío');
+    }
+
+    // Cortar el resumen antes de "Legales y avisos" o variaciones
+    const legalMarkers = [
+      'Legales y avisos',
+      'LEGALES Y AVISOS',
+      'Legales y Avisos',
+      'legales y avisos',
+      'LEGALES',
+      'Legales',
+      'Avisos Legales',
+      'AVISOS LEGALES'
+    ];
+
+    let processedSummary = summary;
+    for (const marker of legalMarkers) {
+      const index = processedSummary.indexOf(marker);
+      if (index !== -1) {
+        processedSummary = processedSummary.substring(0, index).trim();
+        break;
+      }
+    }
+
+    if (processedSummary.length === 0) {
+      throw new BadRequestException('El resumen mensual no contiene información válida después de filtrar secciones legales');
+    }
+
+    // Verificar que existe la API key de OpenAI
+    const openaiApiKey = this.configService.get<string>('OPENAI_API_KEY') || process.env.OPENAI_API_KEY;
+    if (!openaiApiKey) {
+      throw new BadRequestException('OPENAI_API_KEY no está configurada en las variables de entorno. Por favor, configura OPENAI_API_KEY en tu archivo .env o variables de entorno.');
+    }
+
+    // Obtener todas las categorías y conceptos existentes de la base de datos
+    const categories = await this.prisma.category.findMany({
+      include: {
+        type: true,
+      },
+      orderBy: { name: 'asc' },
+    });
+
+    // Obtener conceptos únicos de expenses e income
+    const expenses = await this.prisma.expense.findMany({
+      select: { concept: true, categoryId: true },
+      distinct: ['concept'],
+    });
+
+    const income = await this.prisma.income.findMany({
+      select: { concept: true, categoryId: true },
+      distinct: ['concept'],
+    });
+
+    // Construir estructura de datos para el prompt
+    const categoriesData = categories.map(cat => ({
+      id: cat.id,
+      name: cat.name,
+      type: cat.type.name,
+    }));
+
+    const conceptsData = {
+      expenses: expenses.map(e => ({
+        concept: e.concept,
+        categoryId: e.categoryId,
+      })),
+      income: income.map(i => ({
+        concept: i.concept,
+        categoryId: i.categoryId,
+      })),
+    };
+
+    // Contar líneas con fecha antes de crear el prompt para incluirlo en las instrucciones
+    const estimatedLinesBefore = processedSummary.split('\n').filter(line => {
+      const trimmed = line.trim();
+      const hasDate = /^\d{2}-[A-Za-z]{3}-\d{2}/.test(trimmed);
+      if (!hasDate) return false;
+      const isTotal = trimmed.includes('TOTAL CONSUMOS') || 
+                     trimmed.includes('SALDO ACTUAL') || 
+                     trimmed.includes('SALDO ANTERIOR') ||
+                     trimmed.includes('SUBTOTAL');
+      return !isTotal;
+    }).length;
+
+    // Crear prompt estructurado para OpenAI
+    const prompt = `Eres un asistente experto en análisis de resúmenes financieros mensuales. Tu tarea es analizar el resumen mensual proporcionado y extraer TODAS las transacciones que tienen fecha al principio.
+
+IMPORTANTE: El resumen contiene aproximadamente ${estimatedLinesBefore} transacciones con fecha. DEBES procesar TODAS sin excepción.
+
+DATOS DE LA BASE DE DATOS:
+
+Categorías disponibles:
+${JSON.stringify(categoriesData, null, 2)}
+
+Conceptos existentes:
+Gastos (Expenses):
+${JSON.stringify(conceptsData.expenses, null, 2)}
+
+Ingresos (Income):
+${JSON.stringify(conceptsData.income, null, 2)}
+
+RESUMEN MENSUAL A ANALIZAR:
+${processedSummary}
+
+FORMATO ESPERADO DE TRANSACCIONES:
+Las transacciones válidas tienen el siguiente formato:
+- Fecha al principio en formato DD-MMM-YY (ejemplo: "03-Oct-25", "15-Nov-25", "01-Dic-25")
+- Seguido del concepto/descripción
+- Seguido del monto (puede tener puntos o comas como separadores de miles/decimales)
+- El monto puede estar en pesos (ARS) o dólares (USD). Si la columna "DÓLARES" tiene un valor, el monto está en USD. Si solo la columna "PESOS" tiene valor, está en ARS.
+
+Ejemplo de línea válida en pesos:
+"03-Oct-25 KUMO ARTISAN SRL 001182 17.000,00"
+
+Ejemplo de línea válida en dólares (cuando la columna DÓLARES tiene valor):
+"15-Nov-25 AMAZON.COM 000123 100,00" (si aparece en columna DÓLARES)
+
+INSTRUCCIONES CRÍTICAS:
+1. DEBES procesar TODAS las líneas que comiencen con una fecha en formato DD-MMM-YY (día-mes-año abreviado).
+2. IGNORA completamente SOLO estas líneas:
+   - Líneas que contengan "TOTAL CONSUMOS" (son resúmenes, no transacciones individuales)
+   - Líneas que contengan "SALDO ACTUAL" o "SALDO ANTERIOR"
+   - Líneas que contengan "SUBTOTAL"
+   - Encabezados de tabla como "FECHA DESCRIPCIÓN NRO. CUPÓN PESOS DÓLARES"
+   - Textos explicativos sin fecha
+   - Líneas que NO tengan fecha al principio
+3. PROCESA TODAS las demás líneas que tengan fecha al principio, incluyendo:
+   - Pagos (SU PAGO EN USD, SU PAGO EN PESOS)
+   - Créditos (CR.RG)
+   - Consumos individuales (cualquier comercio o servicio)
+   - Impuestos y cargos con fecha
+4. Para cada línea válida (que comience con fecha y NO sea un total):
+   - Extrae la fecha y conviértela a formato YYYY-MM-DD
+   - Extrae el concepto/descripción (todo el texto entre la fecha y el monto)
+   - Extrae el monto (el número al final, puede tener formato 17.000,00 o 17000.00)
+   - Normaliza el monto eliminando puntos de miles y usando punto como decimal
+   - Identifica la moneda: si la línea tiene un valor en la columna "DÓLARES" o el texto menciona "USD", "DÓLARES", o "$", marca currency como "USD". Si solo tiene valor en "PESOS" o no menciona dólares, marca currency como "ARS"
+5. REGLAS ESPECIALES PARA EL CONCEPTO:
+   - Si el concepto contiene "MERPAGO" (o variaciones como "MERCADOPAGO", "MER PAGO"), NO incluyas "MERPAGO" en el nombre del concepto. Extrae solo el nombre del comercio o servicio real. Ejemplo: "MERCADOPAGO SUPERMERCADO X" debe convertirse en "SUPERMERCADO X".
+   - Si el concepto tiene números largos al final (como códigos de referencia, números de cupón, etc.), elimínalos del nombre del concepto. Ejemplo: "VELEZ SARSFIELD 000113833888832" debe convertirse en "VELEZ SARSFIELD".
+   - El concepto NO debe contener el carácter asterisco (*). Si aparece, elimínalo completamente.
+   - Muchos conceptos pueden identificarse mediante búsqueda contextual. La mayoría de los gastos son en Buenos Aires, Argentina, así que usa ese contexto geográfico para identificar comercios, servicios y establecimientos conocidos en esa ciudad.
+6. Para cada transacción encontrada, intenta asociarla a una categoría y concepto existente en la base de datos.
+7. Si encuentras una coincidencia clara (por ejemplo, "Supermercado" puede asociarse a una categoría "Alimentación" y concepto "Supermercado"), usa el categoryId y concept correspondientes y marca "needsManualMapping": false.
+8. Si NO puedes asociar automáticamente un item, DEBES incluirlo igualmente en el array "records" con:
+   - "categoryId": null
+   - "categoryName": null o una sugerencia basada en el texto
+   - "concept": el texto original o una sugerencia (aplicando las reglas de limpieza mencionadas en el punto 5)
+   - "needsManualMapping": true
+   - "originalText": el texto completo de la línea del resumen
+9. Identifica si es "expense" (gasto) o "income" (ingreso). Por defecto asume "expense" a menos que el contexto indique claramente que es un ingreso.
+10. NO omitas ningún registro que tenga fecha al principio, incluso si no puedes mapearlo. Todos deben estar en el array "records".
+
+FORMATO DE RESPUESTA (JSON):
+{
+  "records": [
+    {
+      "kind": "expense" | "income",
+      "categoryId": "uuid-de-categoria" | null,
+      "categoryName": "nombre-categoria" | null,
+      "concept": "concepto-existente" | "nuevo-concepto" | "texto-original",
+      "amount": número (OBLIGATORIO, sin puntos de miles, punto como decimal),
+      "date": "YYYY-MM-DD" (OBLIGATORIO, convertido desde DD-MMM-YY),
+      "note": "nota-opcional",
+      "currency": "ARS" | "USD" (OBLIGATORIO: "USD" si el monto está en dólares según la columna DÓLARES o el contexto, "ARS" si está en pesos),
+      "needsManualMapping": true | false,
+      "originalText": "texto original completo de la línea del resumen"
+    }
+  ]
+}
+
+REGLAS ABSOLUTAS:
+- PROCESA TODAS las líneas que comiencen con fecha en formato DD-MMM-YY, EXCEPTO las que contengan "TOTAL CONSUMOS", "SALDO ACTUAL", "SALDO ANTERIOR" o "SUBTOTAL"
+- IGNORA SOLO: totales (líneas con "TOTAL CONSUMOS"), subtotales, encabezados de tabla, textos explicativos sin fecha
+- PROCESA: pagos, créditos, consumos individuales, impuestos con fecha - TODOS deben estar en el array "records"
+- Si no puedes mapear un item, inclúyelo igual con needsManualMapping: true
+- NUNCA omitas un registro con fecha (excepto los totales mencionados), incluso si no puedes determinar su categoría
+- El campo "amount" es OBLIGATORIO para todos los registros (normalizado sin puntos de miles)
+- El campo "date" es OBLIGATORIO para todos los registros (convertido a YYYY-MM-DD)
+- El campo "originalText" es OBLIGATORIO para todos los registros
+- IMPORTANTE: Si el resumen tiene muchas transacciones, DEBES incluirlas TODAS. No limites la cantidad.
+- Responde SOLO con el JSON, sin texto adicional antes o después.`;
+
+    try {
+      const openai = new OpenAI({
+        apiKey: openaiApiKey,
+      });
+
+      const completion = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: 'Eres un asistente experto en análisis de resúmenes financieros. Responde siempre en formato JSON válido.',
+          },
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+        temperature: 0.3,
+        response_format: { type: 'json_object' },
+        max_tokens: 16000, // Aumentar tokens máximos para respuestas más largas
+      });
+
+      if (completion.choices[0]?.finish_reason === 'length') {
+        console.warn('[WARNING] La respuesta fue truncada por límite de tokens. Puede que falten registros.');
+      }
+
+      const responseContent = completion.choices[0]?.message?.content;
+      if (!responseContent) {
+        throw new BadRequestException('No se recibió respuesta de OpenAI');
+      }
+
+      // Parsear la respuesta JSON
+      let parsedResponse;
+      try {
+        parsedResponse = JSON.parse(responseContent);
+      } catch (parseError) {
+        // Intentar extraer JSON si hay texto adicional
+        const jsonMatch = responseContent.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          parsedResponse = JSON.parse(jsonMatch[0]);
+        } else {
+          throw new BadRequestException('La respuesta de OpenAI no es un JSON válido');
+        }
+      }
+
+      // Validar estructura de respuesta
+      if (!parsedResponse.records || !Array.isArray(parsedResponse.records)) {
+        throw new BadRequestException('La respuesta de OpenAI no tiene el formato esperado');
+      }
+
+      // Obtener el tipo de cambio del dólar oficial
+      const dollarRate = await this.getOfficialDollarRate();
+      if (!dollarRate) {
+        console.warn('No se pudo obtener el tipo de cambio del dólar oficial. Los montos en USD no se convertirán automáticamente.');
+      }
+
+      // Asegurar que todos los registros tengan los campos requeridos y convertir USD a ARS
+      const validatedRecords = parsedResponse.records.map((record: any) => {
+        let amount = record.amount || 0;
+        let currency = (record.currency || 'ARS').toUpperCase();
+        const originalCurrency = currency;
+        
+        // Si la moneda es USD y tenemos el tipo de cambio, convertir a ARS
+        if (currency === 'USD' && dollarRate && dollarRate > 0) {
+          amount = amount * dollarRate;
+          currency = 'ARS';
+        }
+        
+        return {
+          kind: record.kind || 'expense',
+          categoryId: record.categoryId || null,
+          categoryName: record.categoryName || null,
+          concept: record.concept || record.originalText || 'Sin concepto',
+          amount: amount,
+          date: record.date || null,
+          note: record.note || (originalCurrency === 'USD' && dollarRate ? `Convertido de USD a ARS (tipo de cambio: ${dollarRate.toFixed(2)})` : ''),
+          currency: currency,
+          needsManualMapping: record.needsManualMapping !== undefined ? record.needsManualMapping : (!record.categoryId),
+          originalText: record.originalText || JSON.stringify(record),
+          originalCurrency: originalCurrency === 'USD' ? 'USD' : undefined, // Guardar la moneda original si era USD
+        };
+      });
+
+      // Combinar unmappedItems con records si existen (para compatibilidad)
+      const allRecords = [...validatedRecords];
+      if (parsedResponse.unmappedItems && Array.isArray(parsedResponse.unmappedItems)) {
+        parsedResponse.unmappedItems.forEach((item: any) => {
+          // Verificar que no esté ya en records
+          const exists = allRecords.some(r => r.originalText === item.originalText);
+          if (!exists) {
+            allRecords.push({
+              kind: item.kind || 'expense',
+              categoryId: null,
+              categoryName: item.suggestedCategory || null,
+              concept: item.suggestedConcept || item.originalText || 'Sin concepto',
+              amount: item.amount || 0,
+              date: item.date || null,
+              note: '',
+              currency: 'ARS',
+              needsManualMapping: true,
+              originalText: item.originalText || JSON.stringify(item),
+            });
+          }
+        });
+      }
+
+      const unmappedCount = allRecords.filter(r => r.needsManualMapping || !r.categoryId).length;
+
+      return {
+        records: allRecords,
+        unmappedItems: [], // Ya están incluidos en records
+        message: `Se procesaron ${allRecords.length} registros. ${unmappedCount} requieren mapeo manual.`,
+      };
+    } catch (error) {
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+      console.error('Error procesando resumen mensual con OpenAI:', error);
+      throw new BadRequestException(`Error al procesar el resumen: ${error.message}`);
+    }
   }
 }
 
