@@ -1,17 +1,21 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { CreateInvestmentDto } from './dto/create-investment.dto';
-import { UpdateInvestmentDto } from './dto/update-investment.dto';
+import { CreateHoldingDto } from './dto/create-holding.dto';
+import { UpdateHoldingDto } from './dto/update-holding.dto';
 import { Prisma } from '@prisma/client';
 
 @Injectable()
-export class InvestmentsService {
+export class HoldingsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async findAll() {
-    const investments = await this.prisma.investment.findMany({
+  async findAll(personId?: string) {
+    const where: Prisma.HoldingWhereInput = personId ? { personId } : {};
+    
+    const holdings = await this.prisma.holding.findMany({
+      where,
       orderBy: { createdAt: 'desc' },
       include: { 
+        person: true,
         category: { include: { type: true } },
         operations: {
           orderBy: { date: 'asc' },
@@ -19,35 +23,28 @@ export class InvestmentsService {
       },
     });
 
-    // Calcular el costo promedio ponderado para cada inversión
-    return investments.map(inv => {
-      const averageCost = this.calculateAverageCost(inv);
+    return holdings.map(holding => {
+      const averageCost = this.calculateAverageCost(holding);
       return {
-        ...inv,
+        ...holding,
         averageCost,
       };
     });
   }
 
-  /**
-   * Calcula el costo promedio ponderado basado en todas las compras
-   * Incluye la inversión original y todas las operaciones de compra ordenadas por fecha
-   */
-  private calculateAverageCost(investment: any): number {
+  private calculateAverageCost(holding: any): number {
     const purchases: Array<{ amount: number; price: number; date: Date }> = [];
 
-    // Agregar la inversión original
-    if (investment.originalAmount > 0 && investment.currentAmount > 0) {
-      const originalPrice = investment.originalAmount / investment.currentAmount;
+    if (holding.originalAmount > 0 && holding.currentAmount > 0) {
+      const originalPrice = holding.originalAmount / holding.currentAmount;
       purchases.push({
-        amount: investment.currentAmount,
+        amount: holding.currentAmount,
         price: originalPrice,
-        date: new Date(investment.date),
+        date: new Date(holding.date),
       });
     }
 
-    // Agregar todas las compras ordenadas por fecha
-    const buyOperations = investment.operations
+    const buyOperations = holding.operations
       ?.filter((op: any) => op.type === 'COMPRA' && op.price && op.price > 0)
       .sort((a: any, b: any) => new Date(a.date || a.createdAt).getTime() - new Date(b.date || b.createdAt).getTime()) || [];
 
@@ -63,10 +60,8 @@ export class InvestmentsService {
       return 0;
     }
 
-    // Ordenar todas las compras por fecha
     purchases.sort((a, b) => a.date.getTime() - b.date.getTime());
 
-    // Calcular costo promedio ponderado de todas las compras
     let totalCost = 0;
     let totalAmount = 0;
 
@@ -79,15 +74,28 @@ export class InvestmentsService {
   }
 
   async findOne(id: string) {
-    const investment = await this.prisma.investment.findUnique({
+    const holding = await this.prisma.holding.findUnique({
       where: { id },
-      include: { category: { include: { type: true } } },
+      include: { 
+        person: true,
+        category: { include: { type: true } },
+        operations: {
+          orderBy: { date: 'asc' },
+        },
+      },
     });
-    if (!investment) throw new NotFoundException('Investment not found');
-    return investment;
+    if (!holding) throw new NotFoundException('Holding not found');
+    return holding;
   }
 
-  async create(dto: CreateInvestmentDto) {
+  async create(dto: CreateHoldingDto) {
+    const person = await this.prisma.person.findUnique({
+      where: { id: dto.personId },
+    });
+    if (!person) {
+      throw new NotFoundException('Person not found');
+    }
+
     const category = await this.prisma.category.findUnique({
       where: { id: dto.categoryId },
       include: { type: true },
@@ -96,13 +104,13 @@ export class InvestmentsService {
       throw new NotFoundException('Category not found');
     }
     
-    // Verify that the category type is one of the investment types
     const investmentTypes = ['dolar', 'equity', 'crypto'];
     if (!investmentTypes.includes(category.type.name.toLowerCase())) {
       throw new NotFoundException('Category must be of type "dolar", "equity", or "crypto"');
     }
 
     const data = {
+      personId: dto.personId,
       categoryId: dto.categoryId,
       concept: dto.concept,
       currentAmount: dto.currentAmount,
@@ -114,17 +122,29 @@ export class InvestmentsService {
       custodyEntity: dto.custodyEntity || null,
       x100: dto.x100 ?? false,
       gbp: dto.gbp ?? false,
-    } as unknown as Prisma.InvestmentUncheckedCreateInput;
+    } as unknown as Prisma.HoldingUncheckedCreateInput;
 
-    return this.prisma.investment.create({
+    return this.prisma.holding.create({
       data,
-      include: { category: { include: { type: true } } },
+      include: { 
+        person: true,
+        category: { include: { type: true } },
+      },
     });
   }
 
-  async update(id: string, dto: UpdateInvestmentDto) {
+  async update(id: string, dto: UpdateHoldingDto) {
     await this.findOne(id);
     
+    if (dto.personId) {
+      const person = await this.prisma.person.findUnique({
+        where: { id: dto.personId },
+      });
+      if (!person) {
+        throw new NotFoundException('Person not found');
+      }
+    }
+
     if (dto.categoryId) {
       const category = await this.prisma.category.findUnique({
         where: { id: dto.categoryId },
@@ -134,14 +154,14 @@ export class InvestmentsService {
         throw new NotFoundException('Category not found');
       }
       
-      // Verify that the category type is one of the investment types
       const investmentTypes = ['dolar', 'equity', 'crypto'];
       if (!investmentTypes.includes(category.type.name.toLowerCase())) {
-        throw new NotFoundException('Category must be of type "moneda", "equity", or "crypto"');
+        throw new NotFoundException('Category must be of type "dolar", "equity", or "crypto"');
       }
     }
 
-    const data: Prisma.InvestmentUncheckedUpdateInput = {
+    const data: Prisma.HoldingUncheckedUpdateInput = {
+      personId: dto.personId,
       categoryId: dto.categoryId,
       concept: dto.concept,
       currentAmount: dto.currentAmount,
@@ -164,16 +184,19 @@ export class InvestmentsService {
       data.gbp = dto.gbp;
     }
 
-    return this.prisma.investment.update({
+    return this.prisma.holding.update({
       where: { id },
       data,
-      include: { category: { include: { type: true } } },
+      include: { 
+        person: true,
+        category: { include: { type: true } },
+      },
     });
   }
 
   async remove(id: string) {
     await this.findOne(id);
-    await this.prisma.investment.delete({ where: { id } });
+    await this.prisma.holding.delete({ where: { id } });
     return { id };
   }
 }

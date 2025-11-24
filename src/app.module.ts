@@ -11,6 +11,9 @@ import { FAConfigModule } from './fa-config/fa-config.module';
 import { InvestmentsModule } from './investments/investments.module';
 import { PricesModule } from './prices/prices.module';
 import { InvestmentOperationsModule } from './investment-operations/investment-operations.module';
+import { PersonsModule } from './persons/persons.module';
+import { HoldingsModule } from './holdings/holdings.module';
+import { HoldingOperationsModule } from './holding-operations/holding-operations.module';
 
 @Module({
   imports: [
@@ -28,6 +31,9 @@ import { InvestmentOperationsModule } from './investment-operations/investment-o
     InvestmentsModule,
     PricesModule,
     InvestmentOperationsModule,
+    PersonsModule,
+    HoldingsModule,
+    HoldingOperationsModule,
   ],
 })
 export class AppModule {}

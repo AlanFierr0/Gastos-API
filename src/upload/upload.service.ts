@@ -7,6 +7,8 @@ import { normalizeCategoryName } from '../common/utils/category.util';
 import type { Express } from 'express';
 import OpenAI from 'openai';
 import axios from 'axios';
+import * as fs from 'fs/promises';
+import * as path from 'path';
 
 @Injectable()
 export class UploadService {
@@ -1176,7 +1178,7 @@ export class UploadService {
             // Filtrar líneas inválidas
             if (prevLine.length === 0) continue;
             if (tableHeaderPattern.test(prevLine)) continue;
-            if (/^[\d\s\$\.\,\-]+$/.test(prevLine)) continue; // Solo números y símbolos
+            if (/^[\d\s$.,-]+$/.test(prevLine)) continue; // Solo números y símbolos
             if (prevLine.match(/^Página \d+ de \d+$/i)) continue;
             if (prevLine.match(/^Sobre \(/i)) continue;
             if (prevLine.match(/^Banco BBVA/i)) continue;
@@ -1521,104 +1523,164 @@ export class UploadService {
       return !isTotal;
     }).length;
 
-    // Crear prompt estructurado para OpenAI
-    const prompt = `Eres un asistente experto en análisis de resúmenes financieros mensuales. Tu tarea es analizar el resumen mensual proporcionado y extraer TODAS las transacciones que tienen fecha al principio.
+    // Read concept mapping examples from markdown file
+    let conceptMappingExamples = '';
+    try {
+      // Try multiple paths to find the file (works in both dev and production)
+      const possiblePaths = [
+        path.join(__dirname, 'concept-mapping-examples.md'), // Production (dist/src/upload)
+        path.join(process.cwd(), 'src', 'upload', 'concept-mapping-examples.md'), // Development
+        path.join(process.cwd(), 'dist', 'src', 'upload', 'concept-mapping-examples.md'), // Production alternative
+      ];
+      
+      let fileRead = false;
+      for (const filePath of possiblePaths) {
+        try {
+          conceptMappingExamples = await fs.readFile(filePath, 'utf-8');
+          fileRead = true;
+          break;
+        } catch {
+          // Try next path
+        }
+      }
+      
+      if (!fileRead) {
+        // eslint-disable-next-line @typescript-eslint/no-throw-literal
+        throw new Error('File not found in any of the attempted paths');
+      }
+    } catch (error) {
+      console.warn('Could not read concept-mapping-examples.md, continuing without examples:', error);
+      conceptMappingExamples = 'CONCEPT MAPPING EXAMPLES: Examples file not found. Use the existing concepts list to map transactions.';
+    }
 
-IMPORTANTE: El resumen contiene aproximadamente ${estimatedLinesBefore} transacciones con fecha. DEBES procesar TODAS sin excepción.
+    // Create structured prompt for OpenAI
+    const prompt = `You are an expert assistant in analyzing monthly financial summaries. Your task is to analyze the provided monthly summary and extract ALL transactions that have a date at the beginning.
 
-DATOS DE LA BASE DE DATOS:
+IMPORTANT: The summary contains approximately ${estimatedLinesBefore} transactions with dates. You MUST process ALL of them without exception.
 
-Categorías disponibles:
+DATABASE DATA:
+
+Available Categories:
 ${JSON.stringify(categoriesData, null, 2)}
 
-Conceptos existentes:
-Gastos (Expenses):
+Existing Concepts:
+Expenses:
 ${JSON.stringify(conceptsData.expenses, null, 2)}
 
-Ingresos (Income):
+Income:
 ${JSON.stringify(conceptsData.income, null, 2)}
 
-RESUMEN MENSUAL A ANALIZAR:
+${conceptMappingExamples}
+
+MONTHLY SUMMARY TO ANALYZE:
 ${processedSummary}
 
-FORMATO ESPERADO DE TRANSACCIONES:
-Las transacciones válidas tienen el siguiente formato:
-- Fecha al principio en formato DD-MMM-YY (ejemplo: "03-Oct-25", "15-Nov-25", "01-Dic-25")
-- Seguido del concepto/descripción
-- Seguido del monto (puede tener puntos o comas como separadores de miles/decimales)
-- El monto puede estar en pesos (ARS) o dólares (USD). Si la columna "DÓLARES" tiene un valor, el monto está en USD. Si solo la columna "PESOS" tiene valor, está en ARS.
+EXPECTED TRANSACTION FORMAT:
+Valid transactions have the following format:
+- Date at the beginning in DD-MMM-YY format (example: "03-Oct-25", "15-Nov-25", "01-Dic-25")
+- Followed by the concept/description
+- Followed by the amount (may have dots or commas as thousands/decimal separators)
+- The amount may be in pesos (ARS) or dollars (USD). If the "DÓLARES" column has a value, the amount is in USD. If only the "PESOS" column has a value, it's in ARS.
 
-Ejemplo de línea válida en pesos:
+Example of valid line in pesos:
 "03-Oct-25 KUMO ARTISAN SRL 001182 17.000,00"
 
-Ejemplo de línea válida en dólares (cuando la columna DÓLARES tiene valor):
-"15-Nov-25 AMAZON.COM 000123 100,00" (si aparece en columna DÓLARES)
+Example of valid line in dollars (when DÓLARES column has value):
+"15-Nov-25 AMAZON.COM 000123 100,00" (if it appears in DÓLARES column)
 
-INSTRUCCIONES CRÍTICAS:
-1. DEBES procesar TODAS las líneas que comiencen con una fecha en formato DD-MMM-YY (día-mes-año abreviado).
-2. IGNORA completamente SOLO estas líneas:
-   - Líneas que contengan "TOTAL CONSUMOS" (son resúmenes, no transacciones individuales)
-   - Líneas que contengan "SALDO ACTUAL" o "SALDO ANTERIOR"
-   - Líneas que contengan "SUBTOTAL"
-   - Encabezados de tabla como "FECHA DESCRIPCIÓN NRO. CUPÓN PESOS DÓLARES"
-   - Textos explicativos sin fecha
-   - Líneas que NO tengan fecha al principio
-3. PROCESA TODAS las demás líneas que tengan fecha al principio, incluyendo:
-   - Pagos (SU PAGO EN USD, SU PAGO EN PESOS)
-   - Créditos (CR.RG)
-   - Consumos individuales (cualquier comercio o servicio)
-   - Impuestos y cargos con fecha
-4. Para cada línea válida (que comience con fecha y NO sea un total):
-   - Extrae la fecha y conviértela a formato YYYY-MM-DD
-   - Extrae el concepto/descripción (todo el texto entre la fecha y el monto)
-   - Extrae el monto (el número al final, puede tener formato 17.000,00 o 17000.00)
-   - Normaliza el monto eliminando puntos de miles y usando punto como decimal
-   - Identifica la moneda: si la línea tiene un valor en la columna "DÓLARES" o el texto menciona "USD", "DÓLARES", o "$", marca currency como "USD". Si solo tiene valor en "PESOS" o no menciona dólares, marca currency como "ARS"
-5. REGLAS ESPECIALES PARA EL CONCEPTO:
-   - Si el concepto contiene "MERPAGO" (o variaciones como "MERCADOPAGO", "MER PAGO"), NO incluyas "MERPAGO" en el nombre del concepto. Extrae solo el nombre del comercio o servicio real. Ejemplo: "MERCADOPAGO SUPERMERCADO X" debe convertirse en "SUPERMERCADO X".
-   - Si el concepto tiene números largos al final (como códigos de referencia, números de cupón, etc.), elimínalos del nombre del concepto. Ejemplo: "VELEZ SARSFIELD 000113833888832" debe convertirse en "VELEZ SARSFIELD".
-   - El concepto NO debe contener el carácter asterisco (*). Si aparece, elimínalo completamente.
-   - Muchos conceptos pueden identificarse mediante búsqueda contextual. La mayoría de los gastos son en Buenos Aires, Argentina, así que usa ese contexto geográfico para identificar comercios, servicios y establecimientos conocidos en esa ciudad.
-6. Para cada transacción encontrada, intenta asociarla a una categoría y concepto existente en la base de datos.
-7. Si encuentras una coincidencia clara (por ejemplo, "Supermercado" puede asociarse a una categoría "Alimentación" y concepto "Supermercado"), usa el categoryId y concept correspondientes y marca "needsManualMapping": false.
-8. Si NO puedes asociar automáticamente un item, DEBES incluirlo igualmente en el array "records" con:
-   - "categoryId": null
-   - "categoryName": null o una sugerencia basada en el texto
-   - "concept": el texto original o una sugerencia (aplicando las reglas de limpieza mencionadas en el punto 5)
-   - "needsManualMapping": true
-   - "originalText": el texto completo de la línea del resumen
-9. Identifica si es "expense" (gasto) o "income" (ingreso). Por defecto asume "expense" a menos que el contexto indique claramente que es un ingreso.
-10. NO omitas ningún registro que tenga fecha al principio, incluso si no puedes mapearlo. Todos deben estar en el array "records".
+CRITICAL INSTRUCTIONS:
+1. You MUST process ALL lines that begin with a date in DD-MMM-YY format (day-month-year abbreviated).
+2. IGNORE completely ONLY these lines:
+   - Lines containing "TOTAL CONSUMOS" (these are summaries, not individual transactions)
+   - Lines containing "SALDO ACTUAL" or "SALDO ANTERIOR"
+   - Lines containing "SUBTOTAL"
+   - Table headers like "FECHA DESCRIPCIÓN NRO. CUPÓN PESOS DÓLARES"
+   - Explanatory text without dates
+   - Lines that do NOT have a date at the beginning
+3. PROCESS ALL other lines that have a date at the beginning, including:
+   - Payments (SU PAGO EN USD, SU PAGO EN PESOS)
+   - Credits (CR.RG)
+   - Individual purchases (any store or service)
+   - Taxes and charges with dates
+4. For each valid line (that begins with a date and is NOT a total):
+   - Extract the date and convert it to YYYY-MM-DD format
+   - Extract the concept/description (all text between the date and the amount)
+   - Extract the amount (the number at the end, may have format 17.000,00 or 17000.00)
+   - Normalize the amount by removing thousands separators and using a dot as decimal
+   - Identify the currency: if the line has a value in the "DÓLARES" column or the text mentions "USD", "DÓLARES", or "$", mark currency as "USD". If it only has a value in "PESOS" or doesn't mention dollars, mark currency as "ARS"
+5. SPECIAL RULES FOR THE CONCEPT:
+   - If the concept contains "MERPAGO" (or variations like "MERCADOPAGO", "MER PAGO"), do NOT include "MERPAGO" in the concept name. Extract only the real store or service name. Example: "MERCADOPAGO SUPERMERCADO X" should become "SUPERMERCADO X".
+   - If the concept has long numbers at the end (like reference codes, coupon numbers, etc.), remove them from the concept name. Example: "VELEZ SARSFIELD 000113833888832" should become "VELEZ SARSFIELD".
+   - The concept must NOT contain the asterisk character (*). If it appears, remove it completely.
+   - Many concepts can be identified through contextual search. Most expenses are in Buenos Aires, Argentina, so use that geographic context to identify known stores, services, and establishments in that city.
+6. MANDATORY RULE - EXISTING CONCEPTS ONLY:
+   YOU MUST ALWAYS use an EXISTING concept from the database. You CANNOT create new concepts.
+   - The "concept" field MUST be one of the existing concepts from the "Existing Concepts" list above
+   - If you cannot find a matching existing concept, you MUST set "needsManualMapping": true
+   - NEVER use a new concept name that is not in the existing concepts list
 
-FORMATO DE RESPUESTA (JSON):
+7. MAPPING PROCESS (STRICT):
+   Step 1: Clean the transaction text (apply rules from point 5)
+   Step 2: Search the "Existing Concepts" list (both Expenses and Income) for a match:
+     a) First, try EXACT match (case-insensitive, ignoring special characters)
+     b) Then, try PARTIAL match (transaction contains concept name or vice versa)
+     c) Then, try FUZZY match using the CONCEPT MAPPING EXAMPLES above
+     d) Then, try CONTEXTUAL match (same merchant/store/service type)
+   
+   Step 3: If you find a match:
+     - Use the EXACT concept name as it appears in the "Existing Concepts" list
+     - Use the corresponding categoryId from the matched concept
+     - Set "needsManualMapping": false
+     - Set "concept" to the EXACT existing concept name (do not modify it)
+   
+   Step 4: If you CANNOT find any match:
+     - Set "categoryId": null
+     - Set "categoryName": null or a suggestion
+     - Set "concept": null (DO NOT create a new concept name)
+     - Set "needsManualMapping": true
+     - Set "originalText": the complete original text
+     - You can add a "suggestedConcept" field with your suggestion, but "concept" must be null
+8. Identify if it's "expense" (expense) or "income" (income). By default assume "expense" unless the context clearly indicates it's income.
+9. Do NOT omit any record that has a date at the beginning, even if you cannot map it. All must be in the "records" array.
+
+RESPONSE FORMAT (JSON):
 {
   "records": [
     {
       "kind": "expense" | "income",
-      "categoryId": "uuid-de-categoria" | null,
-      "categoryName": "nombre-categoria" | null,
-      "concept": "concepto-existente" | "nuevo-concepto" | "texto-original",
-      "amount": número (OBLIGATORIO, sin puntos de miles, punto como decimal),
-      "date": "YYYY-MM-DD" (OBLIGATORIO, convertido desde DD-MMM-YY),
-      "note": "nota-opcional",
-      "currency": "ARS" | "USD" (OBLIGATORIO: "USD" si el monto está en dólares según la columna DÓLARES o el contexto, "ARS" si está en pesos),
+      "categoryId": "category-uuid" | null,
+      "categoryName": "category-name" | null,
+      "concept": "existing-concept-from-database" | null,
+      "amount": number (REQUIRED, no thousands separators, dot as decimal),
+      "date": "YYYY-MM-DD" (REQUIRED, converted from DD-MMM-YY),
+      "note": "optional-note",
+      "currency": "ARS" | "USD" (REQUIRED: "USD" if the amount is in dollars according to DÓLARES column or context, "ARS" if in pesos),
       "needsManualMapping": true | false,
-      "originalText": "texto original completo de la línea del resumen"
+      "originalText": "complete original text of the summary line",
+      "suggestedConcept": "optional-suggestion-only-if-needsManualMapping-is-true"
     }
   ]
 }
 
-REGLAS ABSOLUTAS:
-- PROCESA TODAS las líneas que comiencen con fecha en formato DD-MMM-YY, EXCEPTO las que contengan "TOTAL CONSUMOS", "SALDO ACTUAL", "SALDO ANTERIOR" o "SUBTOTAL"
-- IGNORA SOLO: totales (líneas con "TOTAL CONSUMOS"), subtotales, encabezados de tabla, textos explicativos sin fecha
-- PROCESA: pagos, créditos, consumos individuales, impuestos con fecha - TODOS deben estar en el array "records"
-- Si no puedes mapear un item, inclúyelo igual con needsManualMapping: true
-- NUNCA omitas un registro con fecha (excepto los totales mencionados), incluso si no puedes determinar su categoría
-- El campo "amount" es OBLIGATORIO para todos los registros (normalizado sin puntos de miles)
-- El campo "date" es OBLIGATORIO para todos los registros (convertido a YYYY-MM-DD)
-- El campo "originalText" es OBLIGATORIO para todos los registros
-- IMPORTANTE: Si el resumen tiene muchas transacciones, DEBES incluirlas TODAS. No limites la cantidad.
-- Responde SOLO con el JSON, sin texto adicional antes o después.`;
+CRITICAL: The "concept" field MUST be:
+- An EXACT match from the "Existing Concepts" list above, OR
+- null (if needsManualMapping is true)
+- NEVER a new concept name that doesn't exist in the database
+
+ABSOLUTE RULES:
+- PROCESS ALL lines that begin with a date in DD-MMM-YY format, EXCEPT those containing "TOTAL CONSUMOS", "SALDO ACTUAL", "SALDO ANTERIOR" or "SUBTOTAL"
+- IGNORE ONLY: totals (lines with "TOTAL CONSUMOS"), subtotals, table headers, explanatory text without dates
+- PROCESS: payments, credits, individual purchases, taxes with dates - ALL must be in the "records" array
+- MANDATORY: The "concept" field MUST be an EXISTING concept from the database list above, or null if no match is found
+- FORBIDDEN: You CANNOT create new concept names. If a concept doesn't exist in the "Existing Concepts" list, set "concept": null and "needsManualMapping": true
+- If you find a match to an existing concept, use the EXACT concept name as it appears in the "Existing Concepts" list
+- If you cannot map an item to an existing concept, include it with "concept": null and "needsManualMapping": true
+- NEVER omit a record with a date (except the mentioned totals), even if you cannot determine its category or concept
+- The "amount" field is REQUIRED for all records (normalized without thousands separators)
+- The "date" field is REQUIRED for all records (converted to YYYY-MM-DD)
+- The "originalText" field is REQUIRED for all records
+- IMPORTANT: If the summary has many transactions, you MUST include ALL of them. Do not limit the quantity.
+- Respond ONLY with the JSON, without any additional text before or after.`;
 
     try {
       const openai = new OpenAI({
@@ -1630,7 +1692,7 @@ REGLAS ABSOLUTAS:
         messages: [
           {
             role: 'system',
-            content: 'Eres un asistente experto en análisis de resúmenes financieros. Responde siempre en formato JSON válido.',
+            content: 'You are an expert assistant in analyzing financial summaries. Always respond in valid JSON format. CRITICAL: You MUST use only existing concepts from the database. Never create new concept names. If no match is found, set concept to null and needsManualMapping to true.',
           },
           {
             role: 'user',
@@ -1648,6 +1710,7 @@ REGLAS ABSOLUTAS:
 
       const responseContent = completion.choices[0]?.message?.content;
       if (!responseContent) {
+        // Exception intentionally thrown to be caught by outer catch block
         throw new BadRequestException('No se recibió respuesta de OpenAI');
       }
 
@@ -1657,16 +1720,18 @@ REGLAS ABSOLUTAS:
         parsedResponse = JSON.parse(responseContent);
       } catch (parseError) {
         // Intentar extraer JSON si hay texto adicional
-        const jsonMatch = responseContent.match(/\{[\s\S]*\}/);
+        const jsonMatch = responseContent.match(/\{[\s\S]*}/);
         if (jsonMatch) {
           parsedResponse = JSON.parse(jsonMatch[0]);
         } else {
+          // Exception intentionally thrown to be caught by outer catch block
           throw new BadRequestException('La respuesta de OpenAI no es un JSON válido');
         }
       }
 
       // Validar estructura de respuesta
       if (!parsedResponse.records || !Array.isArray(parsedResponse.records)) {
+        // Exception intentionally thrown to be caught by outer catch block
         throw new BadRequestException('La respuesta de OpenAI no tiene el formato esperado');
       }
 
@@ -1688,18 +1753,28 @@ REGLAS ABSOLUTAS:
           currency = 'ARS';
         }
         
+        // Determine needsManualMapping: true if concept is null, categoryId is null, or explicitly set
+        const needsManualMapping = record.needsManualMapping !== undefined 
+          ? record.needsManualMapping 
+          : (!record.categoryId || !record.concept);
+        
+        // Concept handling: if needsManualMapping is true and concept is null, keep it null
+        // Otherwise, use the concept from the record (should be an existing concept)
+        const conceptValue = needsManualMapping ? null : (record.concept || null);
+        
         return {
           kind: record.kind || 'expense',
           categoryId: record.categoryId || null,
           categoryName: record.categoryName || null,
-          concept: record.concept || record.originalText || 'Sin concepto',
+          concept: conceptValue,
           amount: amount,
           date: record.date || null,
           note: record.note || (originalCurrency === 'USD' && dollarRate ? `Convertido de USD a ARS (tipo de cambio: ${dollarRate.toFixed(2)})` : ''),
           currency: currency,
-          needsManualMapping: record.needsManualMapping !== undefined ? record.needsManualMapping : (!record.categoryId),
+          needsManualMapping: needsManualMapping,
           originalText: record.originalText || JSON.stringify(record),
           originalCurrency: originalCurrency === 'USD' ? 'USD' : undefined, // Guardar la moneda original si era USD
+          suggestedConcept: record.suggestedConcept || null, // Include suggested concept if provided
         };
       });
 
@@ -1714,13 +1789,14 @@ REGLAS ABSOLUTAS:
               kind: item.kind || 'expense',
               categoryId: null,
               categoryName: item.suggestedCategory || null,
-              concept: item.suggestedConcept || item.originalText || 'Sin concepto',
+              concept: null, // Always null for unmapped items - they need manual mapping
               amount: item.amount || 0,
               date: item.date || null,
               note: '',
               currency: 'ARS',
               needsManualMapping: true,
               originalText: item.originalText || JSON.stringify(item),
+              suggestedConcept: item.suggestedConcept || null, // Include suggested concept
             });
           }
         });

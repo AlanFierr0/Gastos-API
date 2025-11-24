@@ -1,7 +1,11 @@
 import { IsUUID, IsNumber, IsOptional, IsString, IsDateString, IsBoolean } from 'class-validator';
 import { Transform } from 'class-transformer';
 
-export class UpdateInvestmentDto {
+export class UpdateHoldingDto {
+  @IsOptional()
+  @IsUUID()
+  personId?: string;
+
   @IsOptional()
   @IsUUID()
   categoryId?: string;

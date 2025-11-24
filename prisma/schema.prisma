@@ -21,6 +21,7 @@ model Category {
   expenses    Expense[]
   income      Income[]
   investments Investment[]
+  holdings    Holding[]
 }
 
 model Expense {
@@ -55,6 +56,7 @@ model Investment {
   concept        String
   currentAmount  Float
   tag            String?
+  sector         String?
   originalAmount Float
   date           DateTime
   createdAt      DateTime              @default(now())
@@ -113,6 +115,56 @@ enum ExpenseType {
   SEMESTRAL
   ANUAL
   EXCEPCIONAL
+}
+
+model Person {
+  id        String    @id @default(uuid())
+  name      String
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  holdings  Holding[]
+
+  @@index([name])
+}
+
+model Holding {
+  id             String            @id @default(uuid())
+  personId       String
+  categoryId     String
+  concept        String
+  currentAmount  Float
+  tag            String?
+  sector         String?
+  originalAmount Float
+  date           DateTime
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  currentPrice   Float?
+  custodyEntity  String?
+  x100           Boolean           @default(false)
+  gbp            Boolean           @default(false)
+  person         Person            @relation(fields: [personId], references: [id], onDelete: Cascade)
+  category       Category           @relation(fields: [categoryId], references: [id])
+  operations     HoldingOperation[]
+
+  @@index([personId])
+  @@index([categoryId])
+}
+
+model HoldingOperation {
+  id           String        @id @default(uuid())
+  holdingId    String
+  type         OperationType
+  amount       Float
+  price        Float?
+  note         String?
+  date         DateTime
+  createdAt    DateTime      @default(now())
+  holding      Holding       @relation(fields: [holdingId], references: [id], onDelete: Cascade)
+
+  @@index([holdingId])
+  @@index([createdAt])
+  @@index([date])
 }
 
 enum OperationType {

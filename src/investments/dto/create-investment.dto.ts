@@ -21,6 +21,10 @@ export class CreateInvestmentDto {
   @IsString()
   tag?: string;
 
+  @IsOptional()
+  @IsString()
+  sector?: string;
+
   @IsNumber()
   @Transform(({ value }) => (typeof value === 'string' ? parseFloat(value) : value))
   originalAmount: number;

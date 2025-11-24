@@ -1,19 +1,19 @@
 import { IsUUID, IsNumber, IsOptional, IsString, IsDateString, IsBoolean } from 'class-validator';
 import { Transform } from 'class-transformer';
 
-export class UpdateInvestmentDto {
-  @IsOptional()
+export class CreateHoldingDto {
   @IsUUID()
-  categoryId?: string;
+  personId: string;
 
-  @IsOptional()
+  @IsUUID()
+  categoryId: string;
+
   @IsString()
-  concept?: string;
+  concept: string;
 
-  @IsOptional()
   @IsNumber()
   @Transform(({ value }) => (typeof value === 'string' ? parseFloat(value) : value))
-  currentAmount?: number;
+  currentAmount: number;
 
   @IsOptional()
   @IsNumber()
@@ -28,20 +28,18 @@ export class UpdateInvestmentDto {
   @IsString()
   sector?: string;
 
-  @IsOptional()
   @IsNumber()
   @Transform(({ value }) => (typeof value === 'string' ? parseFloat(value) : value))
-  originalAmount?: number;
+  originalAmount: number;
 
-  @IsOptional()
   @IsDateString()
   @Transform(({ value }) => {
-    if (value && typeof value === 'string') {
+    if (typeof value === 'string') {
       return new Date(value).toISOString();
     }
     return value;
   })
-  date?: string | Date;
+  date: string | Date;
 
   @IsOptional()
   @IsString()
