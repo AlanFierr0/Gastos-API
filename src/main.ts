@@ -28,23 +28,42 @@ async function bootstrap() {
         'http://localhost:3000', // swagger or same-origin tools
         'http://app:5173', // Docker internal network
       ];
+  
+  // Always add localhost and 127.0.0.1 variants if not already present
+  const defaultOrigins = [
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+  ];
+  defaultOrigins.forEach(origin => {
+    if (!allowedOrigins.includes(origin)) {
+      allowedOrigins.push(origin);
+    }
+  });
 
   app.enableCors({
     origin: (origin, callback) => {
       // Allow requests with no origin (like mobile apps or curl requests)
       if (!origin) return callback(null, true);
       
+      // Always allow localhost and 127.0.0.1 (for local development)
+      if (origin.includes('localhost') || origin.includes('127.0.0.1')) {
+        callback(null, true);
+        return;
+      }
+      
       // Check if origin is in allowed list
       if (allowedOrigins.includes(origin)) {
         callback(null, true);
-      } else {
-        // In development, allow any localhost origin
-        if (process.env.NODE_ENV !== 'production' && origin.includes('localhost')) {
-          callback(null, true);
-        } else {
-          callback(new Error('Not allowed by CORS'));
-        }
+        return;
       }
+      
+      // Also allow Docker internal network
+      if (origin.includes('app:5173')) {
+        callback(null, true);
+        return;
+      }
+      
+      callback(new Error('Not allowed by CORS'));
     },
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
