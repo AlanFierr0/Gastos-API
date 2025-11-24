@@ -30,7 +30,8 @@
     "docker:rebuild": "docker-compose down && docker-compose up --build -d",
     "docker:restart": "docker-compose restart",
     "docker:logs": "docker-compose logs -f",
-    "docker:update": "docker-compose down && docker-compose up --build -d"
+    "docker:update": "node check-env.js && docker-compose down && docker-compose up --build -d",
+    "check:env": "node check-env.js"
   },
   "keywords": [],
   "author": "",
