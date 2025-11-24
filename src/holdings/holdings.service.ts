@@ -134,7 +134,7 @@ export class HoldingsService {
   }
 
   async update(id: string, dto: UpdateHoldingDto) {
-    await this.findOne(id);
+    const existing = await this.findOne(id);
     
     if (dto.personId) {
       const person = await this.prisma.person.findUnique({

@@ -4,16 +4,16 @@ services:
     image: postgres:14
     container_name: gastos-db
     environment:
-      POSTGRES_USER: ${DB_USER:-postgres}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
-      POSTGRES_DB: ${DB_NAME:-gastos_db}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
     ports:
-      - "${DB_PORT:-6544}:5432"
+      - "${DB_PORT}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -24,17 +24,18 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        DB_USER: ${DB_USER:-postgres}
-        DB_PASSWORD: ${DB_PASSWORD:-postgres}
-        DB_NAME: ${DB_NAME:-gastos_db}
+        DB_USER: ${DB_USER}
+        DB_PASSWORD: ${DB_PASSWORD}
+        DB_NAME: ${DB_NAME}
     container_name: gastos-api
     ports:
-      - "${API_PORT:-6543}:6543"
+      - "${API_PORT}:6543"
     environment:
       - NODE_ENV=production
       - PORT=6543
-      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/${DB_NAME:-gastos_db}?schema=public
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}?schema=public
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - CORS_ORIGINS=${CORS_ORIGINS}
     depends_on:
       postgres:
         condition: service_healthy
@@ -49,10 +50,10 @@ services:
       context: ../Gastos-APP
       dockerfile: Dockerfile
       args:
-        VITE_API_URL: http://localhost:${API_PORT:-6543}
+        VITE_API_URL: http://localhost:${API_PORT}
     container_name: gastos-app
     ports:
-      - "${APP_PORT:-5173}:5173"
+      - "${APP_PORT}:5173"
     depends_on:
       - api
     restart: unless-stopped

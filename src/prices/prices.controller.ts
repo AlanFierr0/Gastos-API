@@ -21,6 +21,13 @@ export class PricesController {
     return this.pricesService.updateInvestmentPrices();
   }
 
+  @Post('update-holdings')
+  @ApiOperation({ summary: 'Actualizar precios actuales de las tenencias' })
+  @ApiResponse({ status: 200, description: 'Precios de tenencias actualizados' })
+  async updateHoldingPrices() {
+    return this.pricesService.updateHoldingPrices();
+  }
+
   @Get()
   @ApiOperation({ summary: 'Obtener todos los precios guardados' })
   @ApiResponse({ status: 200, description: 'Lista de precios' })

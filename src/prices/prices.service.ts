@@ -517,6 +517,19 @@ export class PricesService {
         },
       });
 
+      // Get GBP/USD rate once if needed
+      let gbpPrice: number | null = null;
+      const needsGbpPrice = investments.some(inv => inv.gbp && inv.category?.type?.name?.toLowerCase() === 'equity');
+      if (needsGbpPrice) {
+        gbpPrice = await this.getPrice('GBPUSD=X');
+        if (!gbpPrice || gbpPrice <= 0) {
+          gbpPrice = await this.getPrice('GBPUSD');
+        }
+        if (!gbpPrice || gbpPrice <= 0) {
+          gbpPrice = await this.getPrice('GBP=X');
+        }
+      }
+
       for (const inv of investments) {
         const concept = inv.concept?.toUpperCase().trim();
         if (!concept) {
@@ -531,9 +544,25 @@ export class PricesService {
         }
 
         try {
-          const price = await this.getPrice(concept);
+          let price = await this.getPrice(concept);
           this.logger.debug(`Looking for price of ${concept}: ${price}`);
           if (price && price > 0) {
+            // Apply transformations before saving
+            // The price from API is "raw", we need to transform it if x100 or gbp flags are set
+            // If X100: divide price by 100
+            // If GBP: multiply by GBP/USD rate
+            if (typeName === 'equity') {
+              // If x100 is enabled, divide price by 100 before saving
+              if (inv.x100) {
+                price = price / 100;
+              }
+              
+              // If gbp is enabled, multiply by GBP/USD rate before saving
+              if (inv.gbp && gbpPrice && gbpPrice > 0) {
+                price = price * gbpPrice;
+              }
+            }
+
             await this.prisma.investment.update({
               where: { id: inv.id },
               data: { currentPrice: price },
@@ -550,6 +579,89 @@ export class PricesService {
       }
     } catch (error) {
       this.logger.error(`Error in updateInvestmentPrices: ${error.message}`);
+      errors++;
+    }
+
+    return { updated, errors };
+  }
+
+  async updateHoldingPrices(): Promise<{ updated: number; errors: number }> {
+    let updated = 0;
+    let errors = 0;
+
+    try {
+      const holdings = await this.prisma.holding.findMany({
+        include: {
+          category: {
+            include: {
+              type: true,
+            },
+          },
+        },
+      });
+
+      // Get GBP/USD rate once if needed
+      let gbpPrice: number | null = null;
+      const needsGbpPrice = holdings.some(holding => holding.gbp && holding.category?.type?.name?.toLowerCase() === 'equity');
+      if (needsGbpPrice) {
+        gbpPrice = await this.getPrice('GBPUSD=X');
+        if (!gbpPrice || gbpPrice <= 0) {
+          gbpPrice = await this.getPrice('GBPUSD');
+        }
+        if (!gbpPrice || gbpPrice <= 0) {
+          gbpPrice = await this.getPrice('GBP=X');
+        }
+      }
+
+      for (const holding of holdings) {
+        const concept = holding.concept?.toUpperCase().trim();
+        if (!concept) {
+          this.logger.warn(`Holding ${holding.id} has no concept, skipping`);
+          continue;
+        }
+
+        const typeName = holding.category?.type?.name?.toLowerCase();
+        if (typeName !== 'crypto' && typeName !== 'equity') {
+          this.logger.debug(`Holding ${holding.id} (${concept}) is type ${typeName}, skipping`);
+          continue;
+        }
+
+        try {
+          let price = await this.getPrice(concept);
+          this.logger.debug(`Looking for price of ${concept}: ${price}`);
+          if (price && price > 0) {
+            // Apply transformations before saving
+            // The price from API is "raw", we need to transform it if x100 or gbp flags are set
+            // If X100: divide price by 100
+            // If GBP: multiply by GBP/USD rate
+            if (typeName === 'equity') {
+              // If x100 is enabled, divide price by 100 before saving
+              if (holding.x100) {
+                price = price / 100;
+              }
+              
+              // If gbp is enabled, multiply by GBP/USD rate before saving
+              if (holding.gbp && gbpPrice && gbpPrice > 0) {
+                price = price * gbpPrice;
+              }
+            }
+
+            await this.prisma.holding.update({
+              where: { id: holding.id },
+              data: { currentPrice: price },
+            });
+            this.logger.log(`Updated holding ${holding.id} (${concept}) with price ${price}`);
+            updated++;
+          } else {
+            this.logger.warn(`No price found for ${concept} or price is 0`);
+          }
+        } catch (error) {
+          this.logger.error(`Error updating price for holding ${holding.id}: ${error.message}`);
+          errors++;
+        }
+      }
+    } catch (error) {
+      this.logger.error(`Error in updateHoldingPrices: ${error.message}`);
       errors++;
     }
 

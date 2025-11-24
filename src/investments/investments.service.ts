@@ -123,7 +123,7 @@ export class InvestmentsService {
   }
 
   async update(id: string, dto: UpdateInvestmentDto) {
-    await this.findOne(id);
+    const existing = await this.findOne(id);
     
     if (dto.categoryId) {
       const category = await this.prisma.category.findUnique({
