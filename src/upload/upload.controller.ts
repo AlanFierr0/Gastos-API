@@ -152,13 +152,13 @@ export class UploadController {
   @Post('monthly-summary/process-section')
   @ApiOperation({ summary: 'Procesar una sección específica del resumen mensual' })
   @ApiResponse({ status: 200, description: 'Sección procesada exitosamente' })
-  async processMonthlySummarySection(@Body() body: { sectionContent: string; sectionTitle?: string }) {
+  async processMonthlySummarySection(@Body() body: { sectionContent: string; sectionTitle?: string; selectedBank?: { categoryId: string; concept: string; categoryName: string } }) {
     if (!body.sectionContent || body.sectionContent.trim().length === 0) {
       throw new BadRequestException('El contenido de la sección no puede estar vacío');
     }
 
     try {
-      return await this.uploadService.processMonthlySummary(body.sectionContent);
+      return await this.uploadService.processMonthlySummary(body.sectionContent, body.selectedBank, body.sectionTitle);
     } catch (error) {
       // Devolver información detallada del error
       const errorMessage = error instanceof Error ? error.message : String(error);

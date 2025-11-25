@@ -7,14 +7,42 @@ import { normalizeCategoryName } from '../common/utils/category.util';
 import type { Express } from 'express';
 import OpenAI from 'openai';
 import axios from 'axios';
-import * as fs from 'fs/promises';
-import * as path from 'path';
 
 @Injectable()
 export class UploadService {
   private readonly MAX_ROWS = 10000; // Limit to prevent DoS
   private readonly MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
   
+  // Mapeo de comercios a categorías y conceptos (para mapeo automático)
+  private readonly MERCHANT_MAPPINGS: Array<{
+    merchant: string; // Nombre del comercio (case-insensitive, puede ser parcial)
+    categoryName: string; // Nombre de la categoría
+    concept: string; // Nombre del concepto
+  }> = [
+    { merchant: 'VELEZ SARSFIELD', categoryName: 'Salud', concept: 'deportes' },
+    { merchant: 'Fravega', categoryName: 'Mantenimiento casa', concept: 'electronica' },
+    { merchant: 'Colorin', categoryName: 'Mantenimiento casa', concept: 'mejoras y arreglos' },
+    { merchant: 'SINTEPLAST-LA PISTA', categoryName: 'Mantenimiento casa', concept: 'mejoras y arreglos' },
+    { merchant: 'Zurich seguros', categoryName: 'servicio', concept: 'seguro hogar' },
+    { merchant: 'ADRIANA BESSONE', categoryName: 'Salud', concept: 'Medicos y medicamentos' },
+    { merchant: 'ALEXANDER FLEMING', categoryName: 'Salud', concept: 'Medicos y medicamentos' },
+    { merchant: 'Farmacity', categoryName: 'Salud', concept: 'Medicos y medicamentos' },
+    { merchant: 'SCHOCKBA', categoryName: 'Bienestar', concept: 'salidas' },
+    { merchant: 'Kansas', categoryName: 'Bienestar', concept: 'salidas' },
+    { merchant: 'LCD', categoryName: 'automotores', concept: 'Combustible' },
+    { merchant: 'Apple', categoryName: 'servicios', concept: 'apple icloud' },
+    { merchant: 'PEDIDOSYA', categoryName: 'Bienestar', concept: 'salidas' },
+    { merchant: 'Lucciano', categoryName: 'Bienestar', concept: 'salidas' },
+    { merchant: 'CAMINO PQUE B AY', categoryName: 'automotores', concept: 'peaje' },
+    { merchant: 'CHICLANAPARK 492', categoryName: 'automotores', concept: 'estacionamiento' },
+    { merchant: 'GRANJASMARIA', categoryName: 'alimentación', concept: 'polleria' },
+    { merchant: 'uber', categoryName: 'automotores', concept: 'parking' },
+    { merchant: 'COTO', categoryName: 'alimentación', concept: 'supermercado' },
+    { merchant: 'CARREFOUR', categoryName: 'alimentación', concept: 'supermercado' },
+    { merchant: 'JUMBO', categoryName: 'alimentación', concept: 'supermercado' },
+    { merchant: 'TELECENTRO', categoryName: 'servicios', concept: 'internet' },
+    { merchant: 'Movistar', categoryName: 'servicios', concept: 'Telefonos moviles' },
+  ];
 
   constructor(
     private prisma: PrismaService,
@@ -1438,9 +1466,193 @@ export class UploadService {
     return chunks.length > 0 ? chunks : [content];
   }
 
-  async processMonthlySummary(summary: string) {
+  /**
+   * Normaliza un string para comparación (lowercase, sin acentos, sin espacios extra)
+   */
+  private normalizeString(str: string): string {
+    return str
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '') // Remover acentos
+      .trim()
+      .replace(/\s+/g, ' '); // Normalizar espacios
+  }
+
+  /**
+   * Calcula similitud entre dos strings (0-1)
+   */
+  private stringSimilarity(str1: string, str2: string): number {
+    const s1 = this.normalizeString(str1);
+    const s2 = this.normalizeString(str2);
+    
+    if (s1 === s2) return 1.0;
+    if (s1.includes(s2) || s2.includes(s1)) return 0.9;
+    
+    // Calcular similitud por palabras clave
+    const words1 = s1.split(/\s+/);
+    const words2 = s2.split(/\s+/);
+    const commonWords = words1.filter(w => words2.includes(w));
+    if (commonWords.length > 0) {
+      return Math.max(commonWords.length / Math.max(words1.length, words2.length), 0.7);
+    }
+    
+    return 0;
+  }
+
+  /**
+   * Aplica mapeos de comercios conocidos a un registro
+   * Busca en originalText si contiene alguno de los comercios mapeados
+   */
+  private async applyMerchantMapping(
+    record: any,
+    categoriesData: Array<{ id: string; name: string; type: string }>,
+    conceptsData: { expenses: Array<{ concept: string; categoryId: string }>; income: Array<{ concept: string; categoryId: string }> }
+  ): Promise<{ categoryId: string | null; concept: string | null; categoryName: string | null }> {
+    const originalText = (record.originalText || '').toUpperCase();
+    
+    // Buscar coincidencia con algún comercio mapeado
+    for (const mapping of this.MERCHANT_MAPPINGS) {
+      const merchantUpper = mapping.merchant.toUpperCase();
+      
+      // Verificar si el texto original contiene el comercio (coincidencia parcial)
+      if (originalText.includes(merchantUpper)) {
+        // Buscar la categoría en categoriesData con búsqueda flexible
+        const normalizedMappingCategory = this.normalizeString(mapping.categoryName);
+        let category = categoriesData.find(cat => {
+          const normalizedCatName = this.normalizeString(cat.name);
+          return normalizedCatName === normalizedMappingCategory || 
+                 normalizedCatName.includes(normalizedMappingCategory) ||
+                 normalizedMappingCategory.includes(normalizedCatName);
+        });
+        
+        // Si no se encontró con búsqueda exacta, buscar por similitud
+        if (!category) {
+          const categoryMatches = categoriesData.map(cat => ({
+            category: cat,
+            similarity: this.stringSimilarity(cat.name, mapping.categoryName)
+          })).filter(m => m.similarity > 0.7)
+            .sort((a, b) => b.similarity - a.similarity);
+          
+          if (categoryMatches.length > 0) {
+            category = categoryMatches[0].category;
+          }
+        }
+        
+        if (!category) {
+          const availableCategories = categoriesData.map(c => c.name).join(', ');
+          console.warn(`Categoría "${mapping.categoryName}" no encontrada en la base de datos para comercio "${mapping.merchant}"`);
+          console.warn(`Categorías disponibles: ${availableCategories}`);
+          continue;
+        }
+        
+        // Buscar el concepto en conceptsData (tanto expenses como income) con búsqueda flexible
+        const allConcepts = [...conceptsData.expenses, ...conceptsData.income];
+        const normalizedMappingConcept = this.normalizeString(mapping.concept);
+        let concept = allConcepts.find(c => {
+          const normalizedConceptName = this.normalizeString(c.concept);
+          const matchesCategory = c.categoryId === category.id;
+          const matchesConcept = normalizedConceptName === normalizedMappingConcept || 
+                                 normalizedConceptName.includes(normalizedMappingConcept) ||
+                                 normalizedMappingConcept.includes(normalizedConceptName);
+          return matchesCategory && matchesConcept;
+        });
+        
+        // Si no se encontró con búsqueda exacta, buscar por similitud dentro de la categoría
+        if (!concept) {
+          const conceptMatches = allConcepts
+            .filter(c => c.categoryId === category.id)
+            .map(c => ({
+              concept: c,
+              similarity: this.stringSimilarity(c.concept, mapping.concept)
+            }))
+            .filter(m => m.similarity > 0.7)
+            .sort((a, b) => b.similarity - a.similarity);
+          
+          if (conceptMatches.length > 0) {
+            concept = conceptMatches[0].concept;
+          }
+        }
+        
+        if (!concept) {
+          const availableConcepts = allConcepts
+            .filter(c => c.categoryId === category.id)
+            .map(c => c.concept)
+            .join(', ');
+          console.warn(`Concepto "${mapping.concept}" no encontrado en categoría "${category.name}" para comercio "${mapping.merchant}"`);
+          console.warn(`Conceptos disponibles en "${category.name}": ${availableConcepts || '(ninguno)'}`);
+          continue;
+        }
+        
+        // Retornar el mapeo encontrado
+        return {
+          categoryId: category.id,
+          concept: concept.concept,
+          categoryName: category.name,
+        };
+      }
+    }
+    
+    // No se encontró mapeo
+    return {
+      categoryId: null,
+      concept: null,
+      categoryName: null,
+    };
+  }
+
+  async processMonthlySummary(summary: string, selectedBank?: { categoryId: string; concept: string; categoryName: string }, sectionTitle?: string) {
     if (!summary || summary.trim().length === 0) {
       throw new BadRequestException('El resumen mensual no puede estar vacío');
+    }
+    
+    // Si la sección es "Sus pagos y ajustes realizados", retornar vacío (no procesar)
+    const paymentMarkers = [
+      'Sus pagos y ajustes realizados',
+      'SUS PAGOS Y AJUSTES REALIZADOS',
+      'Sus Pagos y Ajustes Realizados',
+      'sus pagos y ajustes realizados',
+      'PAGOS Y AJUSTES',
+      'Pagos y ajustes',
+    ];
+    
+    if (sectionTitle) {
+      const isPaymentSection = paymentMarkers.some(marker => 
+        sectionTitle.toLowerCase().includes(marker.toLowerCase())
+      );
+      if (isPaymentSection) {
+        return {
+          records: [],
+          unmappedItems: [],
+          message: 'Sección "Sus pagos y ajustes realizados" ignorada según configuración.',
+        };
+      }
+    }
+    
+    // Filtrar la sección "Sus pagos y ajustes realizados" del contenido si está presente
+    let processedSummary = summary;
+    for (const marker of paymentMarkers) {
+      const index = processedSummary.indexOf(marker);
+      if (index !== -1) {
+        // Encontrar el final de esta sección (buscar la siguiente sección o el final del texto)
+        const nextSectionMarkers = [
+          'Impuestos, cargos e intereses',
+          'IMPUESTOS, CARGOS E INTERESES',
+          'Legales y avisos',
+          'LEGALES Y AVISOS',
+        ];
+        
+        let endIndex = processedSummary.length;
+        for (const nextMarker of nextSectionMarkers) {
+          const nextIndex = processedSummary.indexOf(nextMarker, index + marker.length);
+          if (nextIndex !== -1 && nextIndex < endIndex) {
+            endIndex = nextIndex;
+          }
+        }
+        
+        // Eliminar la sección completa
+        processedSummary = processedSummary.substring(0, index).trim() + '\n' + processedSummary.substring(endIndex).trim();
+        break;
+      }
     }
 
     // Cortar el resumen antes de "Legales y avisos" o variaciones
@@ -1455,7 +1667,6 @@ export class UploadService {
       'AVISOS LEGALES'
     ];
 
-    let processedSummary = summary;
     for (const marker of legalMarkers) {
       const index = processedSummary.indexOf(marker);
       if (index !== -1) {
@@ -1463,6 +1674,13 @@ export class UploadService {
         break;
       }
     }
+    
+    // Detectar si la sección es "Impuestos, cargos e intereses" y si hay banco seleccionado
+    const isTaxesSection = sectionTitle && (
+      sectionTitle.toLowerCase().includes('impuestos') ||
+      sectionTitle.toLowerCase().includes('cargos') ||
+      sectionTitle.toLowerCase().includes('intereses')
+    );
 
     if (processedSummary.length === 0) {
       throw new BadRequestException('El resumen mensual no contiene información válida después de filtrar secciones legales');
@@ -1523,35 +1741,10 @@ export class UploadService {
       return !isTotal;
     }).length;
 
-    // Read concept mapping examples from markdown file
-    let conceptMappingExamples = '';
-    try {
-      // Try multiple paths to find the file (works in both dev and production)
-      const possiblePaths = [
-        path.join(__dirname, 'concept-mapping-examples.md'), // Production (dist/src/upload)
-        path.join(process.cwd(), 'src', 'upload', 'concept-mapping-examples.md'), // Development
-        path.join(process.cwd(), 'dist', 'src', 'upload', 'concept-mapping-examples.md'), // Production alternative
-      ];
-      
-      let fileRead = false;
-      for (const filePath of possiblePaths) {
-        try {
-          conceptMappingExamples = await fs.readFile(filePath, 'utf-8');
-          fileRead = true;
-          break;
-        } catch {
-          // Try next path
-        }
-      }
-      
-      if (!fileRead) {
-        // eslint-disable-next-line @typescript-eslint/no-throw-literal
-        throw new Error('File not found in any of the attempted paths');
-      }
-    } catch (error) {
-      console.warn('Could not read concept-mapping-examples.md, continuing without examples:', error);
-      conceptMappingExamples = 'CONCEPT MAPPING EXAMPLES: Examples file not found. Use the existing concepts list to map transactions.';
-    }
+    // Preparar mapeos de comercios para el prompt
+    const merchantMappingsText = this.MERCHANT_MAPPINGS.map(m => 
+      `- "${m.merchant}" -> ${m.categoryName} / ${m.concept}`
+    ).join('\n');
 
     // Create structured prompt for OpenAI
     const prompt = `You are an expert assistant in analyzing monthly financial summaries. Your task is to analyze the provided monthly summary and extract ALL transactions that have a date at the beginning.
@@ -1570,7 +1763,16 @@ ${JSON.stringify(conceptsData.expenses, null, 2)}
 Income:
 ${JSON.stringify(conceptsData.income, null, 2)}
 
-${conceptMappingExamples}
+MERCHANT MAPPINGS (HIGH PRIORITY - Use these exact mappings when detected):
+These are frequently recurring merchants that MUST be mapped to these specific categories and concepts:
+${merchantMappingsText}
+
+IMPORTANT: When you detect any of the above merchants in the transaction text (case-insensitive, partial matches allowed), you MUST:
+1. Use the EXACT category name and concept name as specified above
+2. Find the matching categoryId from the "Available Categories" list
+3. Find the matching concept from the "Existing Concepts" list (it must exist in the database)
+4. Set mappingStatus to "ready"
+5. Apply this mapping BEFORE trying other matching strategies
 
 MONTHLY SUMMARY TO ANALYZE:
 ${processedSummary}
@@ -1613,33 +1815,48 @@ CRITICAL INSTRUCTIONS:
    - If the concept has long numbers at the end (like reference codes, coupon numbers, etc.), remove them from the concept name. Example: "VELEZ SARSFIELD 000113833888832" should become "VELEZ SARSFIELD".
    - The concept must NOT contain the asterisk character (*). If it appears, remove it completely.
    - Many concepts can be identified through contextual search. Most expenses are in Buenos Aires, Argentina, so use that geographic context to identify known stores, services, and establishments in that city.
-6. MANDATORY RULE - EXISTING CONCEPTS ONLY:
-   YOU MUST ALWAYS use an EXISTING concept from the database. You CANNOT create new concepts.
-   - The "concept" field MUST be one of the existing concepts from the "Existing Concepts" list above
-   - If you cannot find a matching existing concept, you MUST set "needsManualMapping": true
-   - NEVER use a new concept name that is not in the existing concepts list
+6. MANDATORY RULE - ALWAYS ASSIGN A CONCEPT:
+   YOU MUST ALWAYS try to assign an EXISTING concept from the database. You CANNOT create new concepts.
+   - The "concept" field SHOULD be one of the existing concepts from the "Existing Concepts" list above
+   - ALWAYS try to find the best matching concept, even if you're not 100% sure
+   - Use your best judgment to assign the most likely concept
+   - NEVER leave concept as null unless it's absolutely impossible to find any reasonable match
 
-7. MAPPING PROCESS (STRICT):
+7. MAPPING PROCESS WITH CONFIDENCE LEVELS:
    Step 1: Clean the transaction text (apply rules from point 5)
    Step 2: Search the "Existing Concepts" list (both Expenses and Income) for a match:
-     a) First, try EXACT match (case-insensitive, ignoring special characters)
-     b) Then, try PARTIAL match (transaction contains concept name or vice versa)
-     c) Then, try FUZZY match using the CONCEPT MAPPING EXAMPLES above
-     d) Then, try CONTEXTUAL match (same merchant/store/service type)
+     a) First, try EXACT match (case-insensitive, ignoring special characters) - HIGH CONFIDENCE
+     b) Then, try PARTIAL match (transaction contains concept name or vice versa) - HIGH CONFIDENCE
+     c) Then, try FUZZY match using the CONCEPT MAPPING EXAMPLES above - MEDIUM CONFIDENCE
+     d) Then, try CONTEXTUAL match (same merchant/store/service type) - MEDIUM CONFIDENCE
+     e) Then, try SEMANTIC match (similar meaning or category) - LOW CONFIDENCE
    
-   Step 3: If you find a match:
-     - Use the EXACT concept name as it appears in the "Existing Concepts" list
-     - Use the corresponding categoryId from the matched concept
-     - Set "needsManualMapping": false
-     - Set "concept" to the EXACT existing concept name (do not modify it)
+   Step 3: Assign mappingStatus based on confidence:
+     - "ready": When you have HIGH confidence (exact or strong partial match)
+     - "needs_confirmation": When you have MEDIUM or LOW confidence but still assigned a concept
+     - "needs_mapping": ONLY when it's absolutely impossible to find any reasonable match (use sparingly)
    
-   Step 4: If you CANNOT find any match:
-     - Set "categoryId": null
-     - Set "categoryName": null or a suggestion
-     - Set "concept": null (DO NOT create a new concept name)
-     - Set "needsManualMapping": true
-     - Set "originalText": the complete original text
-     - You can add a "suggestedConcept" field with your suggestion, but "concept" must be null
+   Step 4: ALWAYS try to assign a concept:
+     - If you find a HIGH confidence match:
+       * Use the EXACT concept name as it appears in the "Existing Concepts" list
+       * Use the corresponding categoryId from the matched concept
+       * Set "mappingStatus": "ready"
+       * Set "concept" to the EXACT existing concept name (do not modify it)
+     
+     - If you find a MEDIUM or LOW confidence match:
+       * Use the EXACT concept name as it appears in the "Existing Concepts" list
+       * Use the corresponding categoryId from the matched concept
+       * Set "mappingStatus": "needs_confirmation"
+       * Set "concept" to the EXACT existing concept name (do not modify it)
+       * Optionally add "suggestedConcept" with an alternative if you're unsure
+     
+     - ONLY if you CANNOT find ANY reasonable match:
+       * Set "categoryId": null
+       * Set "categoryName": null or a suggestion
+       * Set "concept": null
+       * Set "mappingStatus": "needs_mapping"
+       * Set "originalText": only the concept/description text (without date and without amount)
+       * Add "suggestedConcept" field with your best guess
 8. Identify if it's "expense" (expense) or "income" (income). By default assume "expense" unless the context clearly indicates it's income.
 9. Do NOT omit any record that has a date at the beginning, even if you cannot map it. All must be in the "records" array.
 
@@ -1655,31 +1872,41 @@ RESPONSE FORMAT (JSON):
       "date": "YYYY-MM-DD" (REQUIRED, converted from DD-MMM-YY),
       "note": "optional-note",
       "currency": "ARS" | "USD" (REQUIRED: "USD" if the amount is in dollars according to DÓLARES column or context, "ARS" if in pesos),
-      "needsManualMapping": true | false,
-      "originalText": "complete original text of the summary line",
-      "suggestedConcept": "optional-suggestion-only-if-needsManualMapping-is-true"
+      "mappingStatus": "ready" | "needs_confirmation" | "needs_mapping" (REQUIRED),
+      "originalText": "only the concept/description text from the summary line, WITHOUT the date and WITHOUT the amount/price",
+      "suggestedConcept": "optional-suggestion-if-mappingStatus-is-needs_confirmation-or-needs_mapping"
     }
   ]
 }
 
-CRITICAL: The "concept" field MUST be:
-- An EXACT match from the "Existing Concepts" list above, OR
-- null (if needsManualMapping is true)
-- NEVER a new concept name that doesn't exist in the database
+CRITICAL: The "concept" field SHOULD be:
+- An EXACT match from the "Existing Concepts" list above (preferred)
+- ALWAYS try to assign a concept, even if you're not 100% sure (use "needs_confirmation" status)
+- Only set to null if mappingStatus is "needs_mapping" (use sparingly)
+- NEVER create a new concept name that doesn't exist in the database
+
+MAPPING STATUS GUIDELINES:
+- "ready": Use when you have HIGH confidence (exact match, strong partial match, or merchant mapping)
+- "needs_confirmation": Use when you have MEDIUM or LOW confidence but still assigned a concept (fuzzy match, contextual match, semantic match)
+- "needs_mapping": Use ONLY when it's absolutely impossible to find any reasonable match (minimize this as much as possible)
 
 ABSOLUTE RULES:
 - PROCESS ALL lines that begin with a date in DD-MMM-YY format, EXCEPT those containing "TOTAL CONSUMOS", "SALDO ACTUAL", "SALDO ANTERIOR" or "SUBTOTAL"
 - IGNORE ONLY: totals (lines with "TOTAL CONSUMOS"), subtotals, table headers, explanatory text without dates
 - PROCESS: payments, credits, individual purchases, taxes with dates - ALL must be in the "records" array
-- MANDATORY: The "concept" field MUST be an EXISTING concept from the database list above, or null if no match is found
-- FORBIDDEN: You CANNOT create new concept names. If a concept doesn't exist in the "Existing Concepts" list, set "concept": null and "needsManualMapping": true
+- MANDATORY: ALWAYS try to assign a concept. Use your best judgment even if you're not 100% sure.
+- PREFERRED: Assign a concept with "ready" or "needs_confirmation" status rather than leaving it as "needs_mapping"
+- FORBIDDEN: You CANNOT create new concept names. If a concept doesn't exist in the "Existing Concepts" list, use the closest match and set "mappingStatus": "needs_confirmation"
 - If you find a match to an existing concept, use the EXACT concept name as it appears in the "Existing Concepts" list
-- If you cannot map an item to an existing concept, include it with "concept": null and "needsManualMapping": true
+- If you're unsure about a match, still assign the most likely concept and set "mappingStatus": "needs_confirmation"
+- ONLY use "needs_mapping" when it's absolutely impossible to find any reasonable match (minimize this)
 - NEVER omit a record with a date (except the mentioned totals), even if you cannot determine its category or concept
 - The "amount" field is REQUIRED for all records (normalized without thousands separators)
 - The "date" field is REQUIRED for all records (converted to YYYY-MM-DD)
-- The "originalText" field is REQUIRED for all records
+- The "mappingStatus" field is REQUIRED for all records ("ready", "needs_confirmation", or "needs_mapping")
+- The "originalText" field is REQUIRED for all records and must contain ONLY the concept/description text, WITHOUT the date (DD-MMM-YY) and WITHOUT the amount/price numbers
 - IMPORTANT: If the summary has many transactions, you MUST include ALL of them. Do not limit the quantity.
+- IMPORTANT: Minimize "needs_mapping" status. Always try to assign a concept, even if you need to use "needs_confirmation".
 - Respond ONLY with the JSON, without any additional text before or after.`;
 
     try {
@@ -1688,11 +1915,11 @@ ABSOLUTE RULES:
       });
 
       const completion = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
+        model: 'gpt-5.1',
         messages: [
           {
             role: 'system',
-            content: 'You are an expert assistant in analyzing financial summaries. Always respond in valid JSON format. CRITICAL: You MUST use only existing concepts from the database. Never create new concept names. If no match is found, set concept to null and needsManualMapping to true.',
+            content: 'You are an expert assistant in analyzing financial summaries. Always respond in valid JSON format. CRITICAL: You MUST always try to assign an existing concept from the database. Use your best judgment even if you\'re not 100% sure. Set mappingStatus to "ready" for high confidence, "needs_confirmation" for medium/low confidence, and "needs_mapping" only when absolutely impossible to find any match. Minimize "needs_mapping" status.',
           },
           {
             role: 'user',
@@ -1700,8 +1927,7 @@ ABSOLUTE RULES:
           },
         ],
         temperature: 0.3,
-        response_format: { type: 'json_object' },
-        max_tokens: 16000, // Aumentar tokens máximos para respuestas más largas
+        response_format: { type: 'json_object' }
       });
 
       if (completion.choices[0]?.finish_reason === 'length') {
@@ -1742,7 +1968,7 @@ ABSOLUTE RULES:
       }
 
       // Asegurar que todos los registros tengan los campos requeridos y convertir USD a ARS
-      const validatedRecords = parsedResponse.records.map((record: any) => {
+      const validatedRecords = await Promise.all(parsedResponse.records.map(async (record: any) => {
         let amount = record.amount || 0;
         let currency = (record.currency || 'ARS').toUpperCase();
         const originalCurrency = currency;
@@ -1753,30 +1979,73 @@ ABSOLUTE RULES:
           currency = 'ARS';
         }
         
-        // Determine needsManualMapping: true if concept is null, categoryId is null, or explicitly set
-        const needsManualMapping = record.needsManualMapping !== undefined 
-          ? record.needsManualMapping 
-          : (!record.categoryId || !record.concept);
+        // Aplicar mapeo de comercios conocidos (tiene prioridad sobre el mapeo de OpenAI)
+        const merchantMapping = await this.applyMerchantMapping(record, categoriesData, conceptsData);
         
-        // Concept handling: if needsManualMapping is true and concept is null, keep it null
-        // Otherwise, use the concept from the record (should be an existing concept)
-        const conceptValue = needsManualMapping ? null : (record.concept || null);
+        // Si encontramos un mapeo de comercio, usarlo (sobrescribe lo que vino de OpenAI)
+        let categoryId = record.categoryId || null;
+        let conceptValue = record.concept || null;
+        let categoryName = record.categoryName || null;
+        
+        // Determinar mappingStatus (compatibilidad hacia atrás con needsManualMapping)
+        let mappingStatus: 'ready' | 'needs_confirmation' | 'needs_mapping';
+        if (record.mappingStatus) {
+          mappingStatus = record.mappingStatus;
+        } else if (record.needsManualMapping !== undefined) {
+          // Compatibilidad hacia atrás: convertir needsManualMapping a mappingStatus
+          mappingStatus = record.needsManualMapping ? 'needs_mapping' : 'ready';
+        } else {
+          // Si no viene ninguno, determinar basado en si tiene categoryId y concept
+          mappingStatus = (!categoryId || !conceptValue) ? 'needs_mapping' : 'needs_confirmation';
+        }
+        
+        if (merchantMapping.categoryId && merchantMapping.concept) {
+          // Aplicar el mapeo del comercio (alta confianza)
+          categoryId = merchantMapping.categoryId;
+          conceptValue = merchantMapping.concept;
+          categoryName = merchantMapping.categoryName;
+          mappingStatus = 'ready';
+        } else if (isTaxesSection && selectedBank && selectedBank.categoryId && selectedBank.concept) {
+          // Si es la sección de impuestos y hay banco seleccionado, asignar al banco (alta confianza)
+          categoryId = selectedBank.categoryId;
+          conceptValue = selectedBank.concept;
+          categoryName = selectedBank.categoryName;
+          mappingStatus = 'ready';
+        } else if (mappingStatus === 'needs_mapping' && conceptValue) {
+          // Si tiene concepto pero está marcado como needs_mapping, cambiar a needs_confirmation
+          mappingStatus = 'needs_confirmation';
+        } else if (mappingStatus === 'needs_mapping' && !conceptValue) {
+          // Si realmente no tiene concepto, mantener needs_mapping
+          conceptValue = null;
+        }
+        
+        // Clean originalText to remove date and amount if they are present
+        let cleanedOriginalText = record.originalText || '';
+        if (cleanedOriginalText) {
+          // Remove date pattern (DD-MMM-YY or DD-MMM-YYYY at the beginning)
+          cleanedOriginalText = cleanedOriginalText.replace(/^\d{2}-[A-Za-z]{3}-\d{2,4}\s*/i, '');
+          // Remove amount patterns (numbers with dots, commas, spaces at the end)
+          cleanedOriginalText = cleanedOriginalText.replace(/\s*\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?\s*$/, '');
+          // Remove trailing/leading whitespace
+          cleanedOriginalText = cleanedOriginalText.trim();
+        }
         
         return {
           kind: record.kind || 'expense',
-          categoryId: record.categoryId || null,
-          categoryName: record.categoryName || null,
+          categoryId: categoryId,
+          categoryName: categoryName,
           concept: conceptValue,
           amount: amount,
           date: record.date || null,
           note: record.note || (originalCurrency === 'USD' && dollarRate ? `Convertido de USD a ARS (tipo de cambio: ${dollarRate.toFixed(2)})` : ''),
           currency: currency,
-          needsManualMapping: needsManualMapping,
-          originalText: record.originalText || JSON.stringify(record),
+          mappingStatus: mappingStatus,
+          originalText: cleanedOriginalText || JSON.stringify(record),
           originalCurrency: originalCurrency === 'USD' ? 'USD' : undefined, // Guardar la moneda original si era USD
           suggestedConcept: record.suggestedConcept || null, // Include suggested concept if provided
+          isTaxesSection: isTaxesSection && selectedBank && selectedBank.categoryId && selectedBank.concept ? true : false, // Marcar registros de impuestos
         };
-      });
+      }));
 
       // Combinar unmappedItems con records si existen (para compatibilidad)
       const allRecords = [...validatedRecords];
@@ -1785,6 +2054,17 @@ ABSOLUTE RULES:
           // Verificar que no esté ya en records
           const exists = allRecords.some(r => r.originalText === item.originalText);
           if (!exists) {
+            // Clean originalText to remove date and amount if they are present
+            let cleanedUnmappedText = item.originalText || '';
+            if (cleanedUnmappedText) {
+              // Remove date pattern (DD-MMM-YY or DD-MMM-YYYY at the beginning)
+              cleanedUnmappedText = cleanedUnmappedText.replace(/^\d{2}-[A-Za-z]{3}-\d{2,4}\s*/i, '');
+              // Remove amount patterns (numbers with dots, commas, spaces at the end)
+              cleanedUnmappedText = cleanedUnmappedText.replace(/\s*\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?\s*$/, '');
+              // Remove trailing/leading whitespace
+              cleanedUnmappedText = cleanedUnmappedText.trim();
+            }
+            
             allRecords.push({
               kind: item.kind || 'expense',
               categoryId: null,
@@ -1794,20 +2074,65 @@ ABSOLUTE RULES:
               date: item.date || null,
               note: '',
               currency: 'ARS',
-              needsManualMapping: true,
-              originalText: item.originalText || JSON.stringify(item),
+              mappingStatus: 'needs_mapping' as const,
+              originalText: cleanedUnmappedText || JSON.stringify(item),
               suggestedConcept: item.suggestedConcept || null, // Include suggested concept
             });
           }
         });
       }
 
-      const unmappedCount = allRecords.filter(r => r.needsManualMapping || !r.categoryId).length;
+      // Separar registros de impuestos de los normales
+      const taxesRecords = allRecords.filter((r: any) => r.isTaxesSection === true);
+      const normalRecords = allRecords.filter((r: any) => !(r as any).isTaxesSection);
+      
+      // Si hay registros de impuestos y banco seleccionado, consolidarlos en un solo registro
+      let consolidatedTaxesRecord = null;
+      if (taxesRecords.length > 0 && selectedBank && selectedBank.categoryId && selectedBank.concept) {
+        const totalTaxesAmount = taxesRecords.reduce((sum: number, r: any) => sum + (r.amount || 0), 0);
+        const taxesDates = taxesRecords.map((r: any) => r.date).filter(Boolean);
+        const earliestDate = taxesDates.length > 0 ? taxesDates.sort()[0] : null;
+        
+        // Buscar la categoría "mantenimiento bancos" o "mantenimiento banco"
+        const bankMaintenanceCategory = categoriesData.find(
+          cat => cat.name.toLowerCase() === 'mantenimiento bancos' || 
+                 cat.name.toLowerCase() === 'mantenimiento banco'
+        );
+        
+        consolidatedTaxesRecord = {
+          kind: 'expense',
+          categoryId: bankMaintenanceCategory?.id || selectedBank.categoryId,
+          categoryName: bankMaintenanceCategory?.name || selectedBank.categoryName,
+          concept: selectedBank.concept,
+          amount: totalTaxesAmount,
+          date: earliestDate || null,
+          note: `Impuestos, cargos e intereses consolidados (${taxesRecords.length} registros)`,
+          currency: 'ARS',
+          mappingStatus: 'ready' as const,
+          originalText: `Impuestos, cargos e intereses - ${taxesRecords.length} registros`,
+          originalCurrency: undefined,
+          suggestedConcept: null,
+          isTaxesSection: true,
+        };
+      }
+      
+      // Combinar registros normales con el registro consolidado de impuestos (si existe)
+      const sortedRecords = [...normalRecords];
+      if (consolidatedTaxesRecord) {
+        sortedRecords.push(consolidatedTaxesRecord);
+      } else if (taxesRecords.length > 0) {
+        // Si no se pudo consolidar pero hay registros de impuestos, agregarlos al final
+        sortedRecords.push(...taxesRecords);
+      }
+
+      const readyCount = sortedRecords.filter(r => r.mappingStatus === 'ready').length;
+      const needsConfirmationCount = sortedRecords.filter(r => r.mappingStatus === 'needs_confirmation').length;
+      const needsMappingCount = sortedRecords.filter(r => r.mappingStatus === 'needs_mapping').length;
 
       return {
-        records: allRecords,
+        records: sortedRecords,
         unmappedItems: [], // Ya están incluidos en records
-        message: `Se procesaron ${allRecords.length} registros. ${unmappedCount} requieren mapeo manual.`,
+        message: `Se procesaron ${sortedRecords.length} registros. ${readyCount} listos, ${needsConfirmationCount} necesitan confirmación, ${needsMappingCount} necesitan mapeo.`,
       };
     } catch (error) {
       if (error instanceof BadRequestException) {
@@ -1815,6 +2140,23 @@ ABSOLUTE RULES:
       }
       console.error('Error procesando resumen mensual con OpenAI:', error);
       throw new BadRequestException(`Error al procesar el resumen: ${error.message}`);
+    }
+  }
+
+  async deleteAllExpensesAndIncome() {
+    try {
+      // Eliminar todos los gastos e ingresos
+      const deletedExpenses = await this.prisma.expense.deleteMany({});
+      const deletedIncome = await this.prisma.income.deleteMany({});
+      
+      return {
+        message: 'Todos los datos eliminados exitosamente',
+        deletedExpenses: deletedExpenses.count,
+        deletedIncome: deletedIncome.count,
+      };
+    } catch (error) {
+      console.error('Error eliminando todos los datos:', error);
+      throw new BadRequestException(`Error al eliminar los datos: ${error.message}`);
     }
   }
 }
