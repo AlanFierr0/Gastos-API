@@ -38,8 +38,12 @@ export class PricesController {
   @Get('symbol/:symbol')
   @ApiOperation({ summary: 'Obtener precio de un símbolo específico' })
   @ApiResponse({ status: 200, description: 'Precio del símbolo' })
-  async getPrice(@Param('symbol') symbol: string) {
-    const price = await this.pricesService.getPrice(symbol);
+  async getPrice(
+    @Param('symbol') symbol: string,
+    @Query('forceRefresh') forceRefresh?: string
+  ) {
+    const force = forceRefresh === 'true' || forceRefresh === '1';
+    const price = await this.pricesService.getPrice(symbol, 0, force);
     return { symbol, price };
   }
 

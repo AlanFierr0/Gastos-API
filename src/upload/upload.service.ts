@@ -1600,17 +1600,7 @@ export class UploadService {
     };
   }
 
-  /**
-   * Procesa un resumen mensual usando OpenAI para extraer transacciones.
-   * 
-   * OPTIMIZACIONES PARA REDUCIR COSTOS DE API:
-   * - Usa modelo gpt-5-nano (más económico)
-   * - Prompt compacto: solo nombres de conceptos/categorías, sin IDs ni datos redundantes
-   * - Limita tokens de respuesta (max_tokens: 4000)
-   * - Limita tamaño del texto procesado (máx 50KB)
-   * - Temperatura reducida (0.2) para respuestas más consistentes
-   * - Instrucciones simplificadas eliminando repeticiones
-   */
+
   async processMonthlySummary(summary: string, selectedBank?: { categoryId: string; concept: string; categoryName: string }, sectionTitle?: string) {
     if (!summary || summary.trim().length === 0) {
       throw new BadRequestException('El resumen mensual no puede estar vacío');
@@ -1822,9 +1812,9 @@ ${processedSummary}`;
         apiKey: openaiApiKey,
       });
 
-      // Usar modelo GPT-5 nano (más económico)
+      // Usar modelo GPT-5.1 con temperatura baja para reducir costos y respuestas más determinísticas
       const completion = await openai.chat.completions.create({
-        model: 'gpt-5-nano', // Modelo GPT-5 nano
+        model: 'gpt-5.1', // Modelo GPT-5.1
         messages: [
           {
             role: 'system',
@@ -1835,10 +1825,18 @@ ${processedSummary}`;
             content: prompt,
           },
         ],
-        temperature: 0.2, // Reducido de 0.3 para respuestas más consistentes
-        max_tokens: 4000, // Limitar tokens de respuesta para reducir costos
+        temperature: 0.1, // Temperatura muy baja para reducir costos y respuestas más determinísticas/consistentes
+        max_completion_tokens: 16000, // Aumentado para evitar truncamiento con muchos registros (4000 era insuficiente)
         response_format: { type: 'json_object' }
       });
+
+      // Log de tokens usados
+      if (completion.usage) {
+        const promptTokens = completion.usage.prompt_tokens || 0;
+        const completionTokens = completion.usage.completion_tokens || 0;
+        const totalTokens = completion.usage.total_tokens || 0;
+        console.log(`[OpenAI Token Usage] Prompt: ${promptTokens}, Completion: ${completionTokens}, Total: ${totalTokens}`);
+      }
 
       if (completion.choices[0]?.finish_reason === 'length') {
         console.warn('[WARNING] La respuesta fue truncada por límite de tokens. Puede que falten registros.');

@@ -4,6 +4,14 @@ import { PrismaService } from '../prisma/prisma.service';
 @Injectable()
 export class PricesService {
   private readonly logger = new Logger(PricesService.name);
+  
+  private readonly MAX_RETRIES = 3;
+  private readonly INITIAL_RETRY_DELAY = 1000; // 1 segundo
+  
+  // Lock para evitar múltiples actualizaciones simultáneas
+  private updateLock = false;
+  private lastUpdateTime = 0;
+  private readonly MIN_UPDATE_INTERVAL = 300000; // Mínimo 5 minutos (300000ms) entre actualizaciones manuales
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -109,10 +117,16 @@ export class PricesService {
 
         try {
           const response = await fetch(url);
-          if (!response.ok) {
-            this.logger.error(`Error fetching crypto prices: ${response.statusText}`);
-            continue;
-          }
+              if (!response.ok) {
+                if (response.status === 429) {
+                  // Rate limiting - esperar más tiempo
+                  this.logger.warn(`Rate limit hit for crypto prices, waiting longer...`);
+                  await new Promise((resolve) => setTimeout(resolve, 5000));
+                  continue;
+                }
+                this.logger.error(`Error fetching crypto prices: ${response.statusText}`);
+                continue;
+              }
 
           const data = await response.json();
 
@@ -163,6 +177,12 @@ export class PricesService {
               });
 
               if (!response.ok) {
+                if (response.status === 429) {
+                  // Rate limiting - esperar más tiempo
+                  this.logger.warn(`Rate limit hit for equity ${symbol}, waiting...`);
+                  await new Promise((resolve) => setTimeout(resolve, 2000));
+                  return;
+                }
                 this.logger.warn(`Error fetching equity price for ${symbol}: ${response.statusText}`);
                 return;
               }
@@ -265,56 +285,92 @@ export class PricesService {
 
   /**
    * Actualiza todos los precios desde las APIs
+   * Con protección contra múltiples llamadas simultáneas y rate limiting
    */
   async updateAllPrices(): Promise<{ saved: number; errors: number; crypto: number; equity: number; investmentsUpdated: number }> {
-    this.logger.log('Starting price update...');
+    // Prevenir múltiples actualizaciones simultáneas
+    if (this.updateLock) {
+      this.logger.warn('Price update already in progress, skipping...');
+      throw new Error('Price update already in progress');
+    }
 
-    const { crypto: cryptoSymbols, equity: equitySymbols } = await this.getSymbolsFromInvestments();
+    // Verificar intervalo mínimo entre actualizaciones (5 minutos)
+    const now = Date.now();
+    if (now - this.lastUpdateTime < this.MIN_UPDATE_INTERVAL) {
+      const secondsRemaining = Math.ceil((this.MIN_UPDATE_INTERVAL - (now - this.lastUpdateTime)) / 1000);
+      const minutesRemaining = Math.ceil(secondsRemaining / 60);
+      this.logger.warn(`Price update called too soon (${Math.ceil((now - this.lastUpdateTime) / 1000)}s ago), skipping...`);
+      throw new Error(`Por favor espera ${minutesRemaining} minuto(s) antes de actualizar nuevamente`);
+    }
 
-    this.logger.log(`Found ${cryptoSymbols.length} crypto symbols and ${equitySymbols.length} equity symbols`);
+    this.updateLock = true;
+    this.lastUpdateTime = now;
 
-    const [cryptoPrices, equityPrices] = await Promise.all([
-      this.fetchCryptoPrices(cryptoSymbols),
-      this.fetchEquityPrices(equitySymbols),
-    ]);
+    try {
+      this.logger.log('Starting price update...');
 
-    this.logger.log(`Fetched ${cryptoPrices.size} crypto prices and ${equityPrices.size} equity prices`);
+      const { crypto: cryptoSymbols, equity: equitySymbols } = await this.getSymbolsFromInvestments();
 
-    const { saved, errors } = await this.savePrices(cryptoPrices, equityPrices);
+      // Siempre incluir GBP/USD en la actualización de precios
+      const equitySymbolsWithGbp = new Set(equitySymbols);
+      equitySymbolsWithGbp.add('GBPUSD=X');
+      equitySymbolsWithGbp.add('GBPUSD');
+      equitySymbolsWithGbp.add('GBP=X');
 
-    this.logger.log(`Price update completed: ${saved} saved, ${errors} errors`);
+      this.logger.log(`Found ${cryptoSymbols.length} crypto symbols and ${equitySymbols.length} equity symbols`);
 
-    // Actualizar automáticamente los precios de las inversiones
-    this.logger.log('Updating investment prices...');
-    const { updated: investmentsUpdated } = await this.updateInvestmentPrices();
-    this.logger.log(`Updated ${investmentsUpdated} investment prices`);
+      const [cryptoPrices, equityPrices] = await Promise.all([
+        this.fetchCryptoPrices(cryptoSymbols),
+        this.fetchEquityPrices(Array.from(equitySymbolsWithGbp)),
+      ]);
 
-    return {
-      saved,
-      errors,
-      crypto: cryptoPrices.size,
-      equity: equityPrices.size,
-      investmentsUpdated,
-    };
+      this.logger.log(`Fetched ${cryptoPrices.size} crypto prices and ${equityPrices.size} equity prices`);
+
+      const { saved, errors } = await this.savePrices(cryptoPrices, equityPrices);
+
+      this.logger.log(`Price update completed: ${saved} saved, ${errors} errors`);
+
+      // Actualizar automáticamente los precios de las inversiones
+      this.logger.log('Updating investment prices...');
+      const { updated: investmentsUpdated } = await this.updateInvestmentPrices();
+      this.logger.log(`Updated ${investmentsUpdated} investment prices`);
+
+      return {
+        saved,
+        errors,
+        crypto: cryptoPrices.size,
+        equity: equityPrices.size,
+        investmentsUpdated,
+      };
+    } catch (error) {
+      this.logger.error(`Error in updateAllPrices: ${error.message}`);
+      throw error;
+    } finally {
+      this.updateLock = false;
+    }
   }
 
   /**
    * Obtiene el precio actual de un símbolo
    * Si no está en la base de datos, intenta obtenerlo desde la API
+   * Con caché en memoria y manejo de rate limiting
    */
-  async getPrice(symbol: string): Promise<number | null> {
+  async getPrice(symbol: string, retryCount = 0, forceRefresh = false): Promise<number | null> {
     const normalizedSymbol = symbol.toUpperCase();
     
-    // Primero buscar en la base de datos
+    // Siempre leer de la base de datos primero (sin caché en memoria)
     const price = await this.prisma.price.findUnique({
       where: { symbol: normalizedSymbol },
     });
 
-    if (price?.price) {
+    // Si existe en BD y no se fuerza refresh, retornar el precio de BD
+    if (price?.price && !forceRefresh) {
       return price.price;
     }
+    
+    // Si se fuerza refresh o no existe en BD, obtener desde API
 
-    // Si no está en la base de datos, intentar obtenerlo desde la API
+    // Si no está en la base de datos, intentar obtenerlo desde la API con retry
     try {
       // Determinar si es crypto o equity basado en el símbolo
       // Los símbolos de tipo de cambio como GBPUSD=X son equity
@@ -322,15 +378,34 @@ export class PricesService {
       
       let fetchedPrice: number | null = null;
       
-      if (isCrypto) {
-        const cryptoPrices = await this.fetchCryptoPrices([normalizedSymbol]);
-        fetchedPrice = cryptoPrices.get(normalizedSymbol) || null;
-      } else {
-        const equityPrices = await this.fetchEquityPrices([normalizedSymbol]);
-        fetchedPrice = equityPrices.get(normalizedSymbol) || null;
+      try {
+        if (isCrypto) {
+          const cryptoPrices = await this.fetchCryptoPrices([normalizedSymbol]);
+          fetchedPrice = cryptoPrices.get(normalizedSymbol) || null;
+        } else {
+          const equityPrices = await this.fetchEquityPrices([normalizedSymbol]);
+          fetchedPrice = equityPrices.get(normalizedSymbol) || null;
+        }
+      } catch (apiError: any) {
+        // Manejar errores de rate limiting
+        if (apiError.message?.includes('Too many requests') || 
+            apiError.message?.includes('rate limit') ||
+            apiError.status === 429) {
+          
+          if (retryCount < this.MAX_RETRIES) {
+            const delay = this.INITIAL_RETRY_DELAY * Math.pow(2, retryCount); // Backoff exponencial
+            this.logger.warn(`Rate limit hit for ${normalizedSymbol}, retrying in ${delay}ms (attempt ${retryCount + 1}/${this.MAX_RETRIES})`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+            return this.getPrice(symbol, retryCount + 1);
+          } else {
+            this.logger.error(`Max retries reached for ${normalizedSymbol} due to rate limiting`);
+            return null;
+          }
+        }
+        throw apiError;
       }
 
-      // Si se obtuvo el precio, guardarlo en la base de datos
+      // Si se obtuvo el precio, guardarlo en la base de datos y caché
       if (fetchedPrice && fetchedPrice > 0) {
         try {
           await this.prisma.price.upsert({
@@ -353,7 +428,7 @@ export class PricesService {
       }
 
       return fetchedPrice;
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Error fetching price for ${normalizedSymbol} from API: ${error.message}`);
       return null;
     }
@@ -517,16 +592,17 @@ export class PricesService {
         },
       });
 
-      // Get GBP/USD rate once if needed
+      // Get GBP/USD rate once if needed (con caché mejorado)
       let gbpPrice: number | null = null;
       const needsGbpPrice = investments.some(inv => inv.gbp && inv.category?.type?.name?.toLowerCase() === 'equity');
       if (needsGbpPrice) {
-        gbpPrice = await this.getPrice('GBPUSD=X');
-        if (!gbpPrice || gbpPrice <= 0) {
-          gbpPrice = await this.getPrice('GBPUSD');
-        }
-        if (!gbpPrice || gbpPrice <= 0) {
-          gbpPrice = await this.getPrice('GBP=X');
+        // Intentar con caché primero
+        const gbpSymbols = ['GBPUSD=X', 'GBPUSD', 'GBP=X'];
+        for (const symbol of gbpSymbols) {
+          gbpPrice = await this.getPrice(symbol);
+          if (gbpPrice && gbpPrice > 0) {
+            break;
+          }
         }
       }
 
@@ -600,16 +676,17 @@ export class PricesService {
         },
       });
 
-      // Get GBP/USD rate once if needed
+      // Get GBP/USD rate once if needed (con caché mejorado)
       let gbpPrice: number | null = null;
       const needsGbpPrice = holdings.some(holding => holding.gbp && holding.category?.type?.name?.toLowerCase() === 'equity');
       if (needsGbpPrice) {
-        gbpPrice = await this.getPrice('GBPUSD=X');
-        if (!gbpPrice || gbpPrice <= 0) {
-          gbpPrice = await this.getPrice('GBPUSD');
-        }
-        if (!gbpPrice || gbpPrice <= 0) {
-          gbpPrice = await this.getPrice('GBP=X');
+        // Intentar con caché primero
+        const gbpSymbols = ['GBPUSD=X', 'GBPUSD', 'GBP=X'];
+        for (const symbol of gbpSymbols) {
+          gbpPrice = await this.getPrice(symbol);
+          if (gbpPrice && gbpPrice > 0) {
+            break;
+          }
         }
       }
 
