@@ -1600,6 +1600,17 @@ export class UploadService {
     };
   }
 
+  /**
+   * Procesa un resumen mensual usando OpenAI para extraer transacciones.
+   * 
+   * OPTIMIZACIONES PARA REDUCIR COSTOS DE API:
+   * - Usa modelo gpt-5-nano (más económico)
+   * - Prompt compacto: solo nombres de conceptos/categorías, sin IDs ni datos redundantes
+   * - Limita tokens de respuesta (max_tokens: 4000)
+   * - Limita tamaño del texto procesado (máx 50KB)
+   * - Temperatura reducida (0.2) para respuestas más consistentes
+   * - Instrucciones simplificadas eliminando repeticiones
+   */
   async processMonthlySummary(summary: string, selectedBank?: { categoryId: string; concept: string; categoryName: string }, sectionTitle?: string) {
     if (!summary || summary.trim().length === 0) {
       throw new BadRequestException('El resumen mensual no puede estar vacío');
@@ -1686,6 +1697,13 @@ export class UploadService {
       throw new BadRequestException('El resumen mensual no contiene información válida después de filtrar secciones legales');
     }
 
+    // Limitar el tamaño del texto para reducir costos de API (máximo 50KB de texto)
+    const MAX_SUMMARY_SIZE = 50000;
+    if (processedSummary.length > MAX_SUMMARY_SIZE) {
+      console.warn(`[WARNING] El resumen es muy grande (${processedSummary.length} caracteres). Se truncará a ${MAX_SUMMARY_SIZE} caracteres para reducir costos.`);
+      processedSummary = processedSummary.substring(0, MAX_SUMMARY_SIZE) + '\n[... texto truncado ...]';
+    }
+
     // Verificar que existe la API key de OpenAI
     const openaiApiKey = this.configService.get<string>('OPENAI_API_KEY') || process.env.OPENAI_API_KEY;
     if (!openaiApiKey) {
@@ -1711,222 +1729,114 @@ export class UploadService {
       distinct: ['concept'],
     });
 
-    // Construir estructura de datos para el prompt
-    const categoriesData = categories.map(cat => ({
-      id: cat.id,
-      name: cat.name,
-      type: cat.type.name,
-    }));
+    // Construir estructura de datos compacta para el prompt (solo conceptos únicos)
+    const categoriesMap = new Map<string, { id: string; name: string; type: string }>();
+    categories.forEach(cat => {
+      categoriesMap.set(cat.name.toLowerCase(), {
+        id: cat.id,
+        name: cat.name,
+        type: cat.type.name,
+      });
+    });
 
-    const conceptsData = {
-      expenses: expenses.map(e => ({
-        concept: e.concept,
-        categoryId: e.categoryId,
-      })),
-      income: income.map(i => ({
-        concept: i.concept,
-        categoryId: i.categoryId,
-      })),
-    };
+    // Crear un mapa de conceptos por nombre (más compacto)
+    const conceptsMap = new Map<string, { concept: string; categoryId: string; categoryName: string }>();
+    [...expenses, ...income].forEach(item => {
+      const category = categories.find(c => c.id === item.categoryId);
+      if (category) {
+        const key = item.concept.toLowerCase();
+        if (!conceptsMap.has(key)) {
+          conceptsMap.set(key, {
+            concept: item.concept,
+            categoryId: item.categoryId,
+            categoryName: category.name,
+          });
+        }
+      }
+    });
 
-    // Contar líneas con fecha antes de crear el prompt para incluirlo en las instrucciones
+    // Formato compacto: solo nombres de categorías y conceptos (sin IDs en el prompt principal)
+    const categoryNames = Array.from(categoriesMap.values()).map(c => c.name).sort();
+    const conceptNames = Array.from(conceptsMap.values()).map(c => c.concept).sort();
+
+    // Preparar mapeos de comercios para el prompt (formato compacto)
+    const merchantMappingsText = this.MERCHANT_MAPPINGS.map(m => 
+      `"${m.merchant}" -> ${m.categoryName}/${m.concept}`
+    ).join(', ');
+
+    // Contar líneas con fecha antes de crear el prompt
     const estimatedLinesBefore = processedSummary.split('\n').filter(line => {
       const trimmed = line.trim();
-      const hasDate = /^\d{2}-[A-Za-z]{3}-\d{2}/.test(trimmed);
-      if (!hasDate) return false;
-      const isTotal = trimmed.includes('TOTAL CONSUMOS') || 
-                     trimmed.includes('SALDO ACTUAL') || 
-                     trimmed.includes('SALDO ANTERIOR') ||
-                     trimmed.includes('SUBTOTAL');
-      return !isTotal;
+      return /^\d{2}-[A-Za-z]{3}-\d{2}/.test(trimmed) && 
+             !trimmed.includes('TOTAL CONSUMOS') && 
+             !trimmed.includes('SALDO ACTUAL') && 
+             !trimmed.includes('SALDO ANTERIOR') &&
+             !trimmed.includes('SUBTOTAL');
     }).length;
 
-    // Preparar mapeos de comercios para el prompt
-    const merchantMappingsText = this.MERCHANT_MAPPINGS.map(m => 
-      `- "${m.merchant}" -> ${m.categoryName} / ${m.concept}`
-    ).join('\n');
+    // Prompt optimizado y más corto
+    const prompt = `Extract ALL transactions from this financial summary. Process ${estimatedLinesBefore} transactions.
 
-    // Create structured prompt for OpenAI
-    const prompt = `You are an expert assistant in analyzing monthly financial summaries. Your task is to analyze the provided monthly summary and extract ALL transactions that have a date at the beginning.
+RULES:
+- Process lines starting with DD-MMM-YY date format
+- Ignore: "TOTAL CONSUMOS", "SALDO ACTUAL", "SALDO ANTERIOR", "SUBTOTAL", headers
+- Extract: date (convert to YYYY-MM-DD), concept (remove MERCADOPAGO prefix, remove trailing numbers), amount (normalize: remove thousands separators, use dot as decimal), currency (USD if DÓLARES column has value, else ARS)
+- Clean concept: remove "MERCADOPAGO"/"MERPAGO", remove trailing numbers/codes, remove asterisks
 
-IMPORTANT: The summary contains approximately ${estimatedLinesBefore} transactions with dates. You MUST process ALL of them without exception.
-
-DATABASE DATA:
-
-Available Categories:
-${JSON.stringify(categoriesData, null, 2)}
-
-Existing Concepts:
-Expenses:
-${JSON.stringify(conceptsData.expenses, null, 2)}
-
-Income:
-${JSON.stringify(conceptsData.income, null, 2)}
-
-MERCHANT MAPPINGS (HIGH PRIORITY - Use these exact mappings when detected):
-These are frequently recurring merchants that MUST be mapped to these specific categories and concepts:
+MERCHANT MAPPINGS (use exact match):
 ${merchantMappingsText}
 
-IMPORTANT: When you detect any of the above merchants in the transaction text (case-insensitive, partial matches allowed), you MUST:
-1. Use the EXACT category name and concept name as specified above
-2. Find the matching categoryId from the "Available Categories" list
-3. Find the matching concept from the "Existing Concepts" list (it must exist in the database)
-4. Set mappingStatus to "ready"
-5. Apply this mapping BEFORE trying other matching strategies
+AVAILABLE CONCEPTS (must use exact names from this list):
+${conceptNames.join(', ')}
 
-MONTHLY SUMMARY TO ANALYZE:
-${processedSummary}
+CATEGORIES:
+${categoryNames.join(', ')}
 
-EXPECTED TRANSACTION FORMAT:
-Valid transactions have the following format:
-- Date at the beginning in DD-MMM-YY format (example: "03-Oct-25", "15-Nov-25", "01-Dic-25")
-- Followed by the concept/description
-- Followed by the amount (may have dots or commas as thousands/decimal separators)
-- The amount may be in pesos (ARS) or dollars (USD). If the "DÓLARES" column has a value, the amount is in USD. If only the "PESOS" column has a value, it's in ARS.
+MAPPING:
+1. Check merchant mappings first (HIGH priority)
+2. Match concept from AVAILABLE CONCEPTS list (exact > partial > fuzzy)
+3. Set mappingStatus: "ready" (high confidence), "needs_confirmation" (medium/low), "needs_mapping" (only if impossible)
+4. ALWAYS assign a concept if possible (use "needs_confirmation" rather than "needs_mapping")
 
-Example of valid line in pesos:
-"03-Oct-25 KUMO ARTISAN SRL 001182 17.000,00"
-
-Example of valid line in dollars (when DÓLARES column has value):
-"15-Nov-25 AMAZON.COM 000123 100,00" (if it appears in DÓLARES column)
-
-CRITICAL INSTRUCTIONS:
-1. You MUST process ALL lines that begin with a date in DD-MMM-YY format (day-month-year abbreviated).
-2. IGNORE completely ONLY these lines:
-   - Lines containing "TOTAL CONSUMOS" (these are summaries, not individual transactions)
-   - Lines containing "SALDO ACTUAL" or "SALDO ANTERIOR"
-   - Lines containing "SUBTOTAL"
-   - Table headers like "FECHA DESCRIPCIÓN NRO. CUPÓN PESOS DÓLARES"
-   - Explanatory text without dates
-   - Lines that do NOT have a date at the beginning
-3. PROCESS ALL other lines that have a date at the beginning, including:
-   - Payments (SU PAGO EN USD, SU PAGO EN PESOS)
-   - Credits (CR.RG)
-   - Individual purchases (any store or service)
-   - Taxes and charges with dates
-4. For each valid line (that begins with a date and is NOT a total):
-   - Extract the date and convert it to YYYY-MM-DD format
-   - Extract the concept/description (all text between the date and the amount)
-   - Extract the amount (the number at the end, may have format 17.000,00 or 17000.00)
-   - Normalize the amount by removing thousands separators and using a dot as decimal
-   - Identify the currency: if the line has a value in the "DÓLARES" column or the text mentions "USD", "DÓLARES", or "$", mark currency as "USD". If it only has a value in "PESOS" or doesn't mention dollars, mark currency as "ARS"
-5. SPECIAL RULES FOR THE CONCEPT:
-   - If the concept contains "MERPAGO" (or variations like "MERCADOPAGO", "MER PAGO"), do NOT include "MERPAGO" in the concept name. Extract only the real store or service name. Example: "MERCADOPAGO SUPERMERCADO X" should become "SUPERMERCADO X".
-   - If the concept has long numbers at the end (like reference codes, coupon numbers, etc.), remove them from the concept name. Example: "VELEZ SARSFIELD 000113833888832" should become "VELEZ SARSFIELD".
-   - The concept must NOT contain the asterisk character (*). If it appears, remove it completely.
-   - Many concepts can be identified through contextual search. Most expenses are in Buenos Aires, Argentina, so use that geographic context to identify known stores, services, and establishments in that city.
-6. MANDATORY RULE - ALWAYS ASSIGN A CONCEPT:
-   YOU MUST ALWAYS try to assign an EXISTING concept from the database. You CANNOT create new concepts.
-   - The "concept" field SHOULD be one of the existing concepts from the "Existing Concepts" list above
-   - ALWAYS try to find the best matching concept, even if you're not 100% sure
-   - Use your best judgment to assign the most likely concept
-   - NEVER leave concept as null unless it's absolutely impossible to find any reasonable match
-
-7. MAPPING PROCESS WITH CONFIDENCE LEVELS:
-   Step 1: Clean the transaction text (apply rules from point 5)
-   Step 2: Search the "Existing Concepts" list (both Expenses and Income) for a match:
-     a) First, try EXACT match (case-insensitive, ignoring special characters) - HIGH CONFIDENCE
-     b) Then, try PARTIAL match (transaction contains concept name or vice versa) - HIGH CONFIDENCE
-     c) Then, try FUZZY match using the CONCEPT MAPPING EXAMPLES above - MEDIUM CONFIDENCE
-     d) Then, try CONTEXTUAL match (same merchant/store/service type) - MEDIUM CONFIDENCE
-     e) Then, try SEMANTIC match (similar meaning or category) - LOW CONFIDENCE
-   
-   Step 3: Assign mappingStatus based on confidence:
-     - "ready": When you have HIGH confidence (exact or strong partial match)
-     - "needs_confirmation": When you have MEDIUM or LOW confidence but still assigned a concept
-     - "needs_mapping": ONLY when it's absolutely impossible to find any reasonable match (use sparingly)
-   
-   Step 4: ALWAYS try to assign a concept:
-     - If you find a HIGH confidence match:
-       * Use the EXACT concept name as it appears in the "Existing Concepts" list
-       * Use the corresponding categoryId from the matched concept
-       * Set "mappingStatus": "ready"
-       * Set "concept" to the EXACT existing concept name (do not modify it)
-     
-     - If you find a MEDIUM or LOW confidence match:
-       * Use the EXACT concept name as it appears in the "Existing Concepts" list
-       * Use the corresponding categoryId from the matched concept
-       * Set "mappingStatus": "needs_confirmation"
-       * Set "concept" to the EXACT existing concept name (do not modify it)
-       * Optionally add "suggestedConcept" with an alternative if you're unsure
-     
-     - ONLY if you CANNOT find ANY reasonable match:
-       * Set "categoryId": null
-       * Set "categoryName": null or a suggestion
-       * Set "concept": null
-       * Set "mappingStatus": "needs_mapping"
-       * Set "originalText": only the concept/description text (without date and without amount)
-       * Add "suggestedConcept" field with your best guess
-8. Identify if it's "expense" (expense) or "income" (income). By default assume "expense" unless the context clearly indicates it's income.
-9. Do NOT omit any record that has a date at the beginning, even if you cannot map it. All must be in the "records" array.
-
-RESPONSE FORMAT (JSON):
+RESPONSE (JSON only):
 {
-  "records": [
-    {
-      "kind": "expense" | "income",
-      "categoryId": "category-uuid" | null,
-      "categoryName": "category-name" | null,
-      "concept": "existing-concept-from-database" | null,
-      "amount": number (REQUIRED, no thousands separators, dot as decimal),
-      "date": "YYYY-MM-DD" (REQUIRED, converted from DD-MMM-YY),
-      "note": "optional-note",
-      "currency": "ARS" | "USD" (REQUIRED: "USD" if the amount is in dollars according to DÓLARES column or context, "ARS" if in pesos),
-      "mappingStatus": "ready" | "needs_confirmation" | "needs_mapping" (REQUIRED),
-      "originalText": "only the concept/description text from the summary line, WITHOUT the date and WITHOUT the amount/price",
-      "suggestedConcept": "optional-suggestion-if-mappingStatus-is-needs_confirmation-or-needs_mapping"
-    }
-  ]
+  "records": [{
+    "kind": "expense"|"income",
+    "categoryId": "uuid"|null,
+    "categoryName": "string"|null,
+    "concept": "exact-concept-name-from-list"|null,
+    "amount": number,
+    "date": "YYYY-MM-DD",
+    "currency": "ARS"|"USD",
+    "mappingStatus": "ready"|"needs_confirmation"|"needs_mapping",
+    "originalText": "concept-text-only-no-date-no-amount",
+    "suggestedConcept": "string"|null
+  }]
 }
 
-CRITICAL: The "concept" field SHOULD be:
-- An EXACT match from the "Existing Concepts" list above (preferred)
-- ALWAYS try to assign a concept, even if you're not 100% sure (use "needs_confirmation" status)
-- Only set to null if mappingStatus is "needs_mapping" (use sparingly)
-- NEVER create a new concept name that doesn't exist in the database
-
-MAPPING STATUS GUIDELINES:
-- "ready": Use when you have HIGH confidence (exact match, strong partial match, or merchant mapping)
-- "needs_confirmation": Use when you have MEDIUM or LOW confidence but still assigned a concept (fuzzy match, contextual match, semantic match)
-- "needs_mapping": Use ONLY when it's absolutely impossible to find any reasonable match (minimize this as much as possible)
-
-ABSOLUTE RULES:
-- PROCESS ALL lines that begin with a date in DD-MMM-YY format, EXCEPT those containing "TOTAL CONSUMOS", "SALDO ACTUAL", "SALDO ANTERIOR" or "SUBTOTAL"
-- IGNORE ONLY: totals (lines with "TOTAL CONSUMOS"), subtotals, table headers, explanatory text without dates
-- PROCESS: payments, credits, individual purchases, taxes with dates - ALL must be in the "records" array
-- MANDATORY: ALWAYS try to assign a concept. Use your best judgment even if you're not 100% sure.
-- PREFERRED: Assign a concept with "ready" or "needs_confirmation" status rather than leaving it as "needs_mapping"
-- FORBIDDEN: You CANNOT create new concept names. If a concept doesn't exist in the "Existing Concepts" list, use the closest match and set "mappingStatus": "needs_confirmation"
-- If you find a match to an existing concept, use the EXACT concept name as it appears in the "Existing Concepts" list
-- If you're unsure about a match, still assign the most likely concept and set "mappingStatus": "needs_confirmation"
-- ONLY use "needs_mapping" when it's absolutely impossible to find any reasonable match (minimize this)
-- NEVER omit a record with a date (except the mentioned totals), even if you cannot determine its category or concept
-- The "amount" field is REQUIRED for all records (normalized without thousands separators)
-- The "date" field is REQUIRED for all records (converted to YYYY-MM-DD)
-- The "mappingStatus" field is REQUIRED for all records ("ready", "needs_confirmation", or "needs_mapping")
-- The "originalText" field is REQUIRED for all records and must contain ONLY the concept/description text, WITHOUT the date (DD-MMM-YY) and WITHOUT the amount/price numbers
-- IMPORTANT: If the summary has many transactions, you MUST include ALL of them. Do not limit the quantity.
-- IMPORTANT: Minimize "needs_mapping" status. Always try to assign a concept, even if you need to use "needs_confirmation".
-- Respond ONLY with the JSON, without any additional text before or after.`;
+SUMMARY:
+${processedSummary}`;
 
     try {
       const openai = new OpenAI({
         apiKey: openaiApiKey,
       });
 
+      // Usar modelo GPT-5 nano (más económico)
       const completion = await openai.chat.completions.create({
-        model: 'gpt-5.1',
+        model: 'gpt-5-nano', // Modelo GPT-5 nano
         messages: [
           {
             role: 'system',
-            content: 'You are an expert assistant in analyzing financial summaries. Always respond in valid JSON format. CRITICAL: You MUST always try to assign an existing concept from the database. Use your best judgment even if you\'re not 100% sure. Set mappingStatus to "ready" for high confidence, "needs_confirmation" for medium/low confidence, and "needs_mapping" only when absolutely impossible to find any match. Minimize "needs_mapping" status.',
+            content: 'You are an expert assistant analyzing financial summaries. Respond ONLY with valid JSON. Always try to assign an existing concept from the provided list. Use mappingStatus: "ready" (high confidence), "needs_confirmation" (medium/low), "needs_mapping" (only if impossible).',
           },
           {
             role: 'user',
             content: prompt,
           },
         ],
-        temperature: 0.3,
+        temperature: 0.2, // Reducido de 0.3 para respuestas más consistentes
+        max_tokens: 4000, // Limitar tokens de respuesta para reducir costos
         response_format: { type: 'json_object' }
       });
 
@@ -1967,6 +1877,19 @@ ABSOLUTE RULES:
         console.warn('No se pudo obtener el tipo de cambio del dólar oficial. Los montos en USD no se convertirán automáticamente.');
       }
 
+      // Convertir categoriesData y conceptsData a arrays para compatibilidad con applyMerchantMapping
+      const categoriesData = Array.from(categoriesMap.values());
+      const conceptsData = {
+        expenses: expenses.map(e => ({
+          concept: e.concept,
+          categoryId: e.categoryId,
+        })),
+        income: income.map(i => ({
+          concept: i.concept,
+          categoryId: i.categoryId,
+        })),
+      };
+
       // Asegurar que todos los registros tengan los campos requeridos y convertir USD a ARS
       const validatedRecords = await Promise.all(parsedResponse.records.map(async (record: any) => {
         let amount = record.amount || 0;
@@ -1979,13 +1902,30 @@ ABSOLUTE RULES:
           currency = 'ARS';
         }
         
+        // Mapear nombres a IDs si OpenAI solo devolvió nombres
+        let categoryId = record.categoryId || null;
+        let categoryName = record.categoryName || null;
+        let conceptValue = record.concept || null;
+        
+        // Si tenemos categoryName pero no categoryId, buscar el ID
+        if (categoryName && !categoryId) {
+          const category = categoriesMap.get(categoryName.toLowerCase());
+          if (category) {
+            categoryId = category.id;
+          }
+        }
+        
+        // Si tenemos conceptValue pero no categoryId, buscar en conceptsMap
+        if (conceptValue && !categoryId) {
+          const conceptInfo = conceptsMap.get(conceptValue.toLowerCase());
+          if (conceptInfo) {
+            categoryId = conceptInfo.categoryId;
+            categoryName = conceptInfo.categoryName;
+          }
+        }
+        
         // Aplicar mapeo de comercios conocidos (tiene prioridad sobre el mapeo de OpenAI)
         const merchantMapping = await this.applyMerchantMapping(record, categoriesData, conceptsData);
-        
-        // Si encontramos un mapeo de comercio, usarlo (sobrescribe lo que vino de OpenAI)
-        let categoryId = record.categoryId || null;
-        let conceptValue = record.concept || null;
-        let categoryName = record.categoryName || null;
         
         // Determinar mappingStatus (compatibilidad hacia atrás con needsManualMapping)
         let mappingStatus: 'ready' | 'needs_confirmation' | 'needs_mapping';
@@ -2094,10 +2034,9 @@ ABSOLUTE RULES:
         const earliestDate = taxesDates.length > 0 ? taxesDates.sort()[0] : null;
         
         // Buscar la categoría "mantenimiento bancos" o "mantenimiento banco"
-        const bankMaintenanceCategory = categoriesData.find(
-          cat => cat.name.toLowerCase() === 'mantenimiento bancos' || 
-                 cat.name.toLowerCase() === 'mantenimiento banco'
-        );
+        const bankMaintenanceCategory = categoriesMap.get('mantenimiento bancos') || 
+                                        categoriesMap.get('mantenimiento banco') ||
+                                        null;
         
         consolidatedTaxesRecord = {
           kind: 'expense',
