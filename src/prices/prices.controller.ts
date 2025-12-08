@@ -1,17 +1,36 @@
-import { Controller, Get, Post, Param, Query } from '@nestjs/common';
+import { Controller, Get, Post, Param, Query, Logger } from '@nestjs/common';
 import { PricesService } from './prices.service';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 
 @ApiTags('prices')
 @Controller('prices')
 export class PricesController {
-  constructor(private readonly pricesService: PricesService) {}
+  private readonly logger = new Logger(PricesController.name);
+  
+  constructor(private readonly pricesService: PricesService) {
+    this.logger.log('PricesController initialized');
+    console.log('[PricesController] Controller initialized');
+  }
 
   @Post('update')
   @ApiOperation({ summary: 'Actualizar todos los precios desde las APIs' })
   @ApiResponse({ status: 200, description: 'Precios actualizados exitosamente' })
-  async updatePrices() {
-    return this.pricesService.updateAllPrices();
+  async updatePrices(@Query('force') force?: string) {
+    const timestamp = new Date().toISOString();
+    const forceUpdate = force === 'true' || force === '1';
+    console.log(`[${timestamp}] [PricesController] updatePrices endpoint called, force: ${forceUpdate}`);
+    this.logger.log(`updatePrices endpoint called at ${timestamp}, force: ${forceUpdate}`);
+    
+    try {
+      const result = await this.pricesService.updateAllPrices(forceUpdate);
+      console.log(`[${timestamp}] [PricesController] updatePrices completed:`, JSON.stringify(result));
+      this.logger.log(`updatePrices completed: ${JSON.stringify(result)}`);
+      return result;
+    } catch (error) {
+      console.error(`[${timestamp}] [PricesController] updatePrices error:`, error);
+      this.logger.error(`updatePrices error: ${error.message}`, error.stack);
+      throw error;
+    }
   }
 
   @Post('update-investments')

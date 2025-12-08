@@ -12,50 +12,144 @@ export class PricesService {
   private updateLock = false;
   private lastUpdateTime = 0;
   private readonly MIN_UPDATE_INTERVAL = 300000; // Mínimo 5 minutos (300000ms) entre actualizaciones manuales
+  
+  // Límites para evitar rate limiting de las APIs
+  // CoinGecko: permite hasta 250 IDs por request, pero solo ~50 requests/minuto (free tier)
+  // Yahoo Finance: no tiene límite oficial pero es muy restrictivo con rate limiting
+  // Estos límites aseguran que no se alcance el rate limit incluso con muchas inversiones
+  private readonly MAX_CRYPTO_SYMBOLS = 50; // Conservador: permite múltiples batches sin problemas
+  private readonly MAX_EQUITY_SYMBOLS = 30; // Conservador: Yahoo Finance es más restrictivo
 
   constructor(private readonly prisma: PrismaService) {}
 
   /**
    * Obtiene los símbolos únicos de crypto y equity desde las inversiones
+   * Prioriza símbolos con inversiones más recientes y con mayor cantidad
+   * Limita la cantidad para evitar rate limiting
    */
   async getSymbolsFromInvestments() {
-    const investments = await this.prisma.investment.findMany({
-      include: {
-        category: {
-          include: {
-            type: true,
+    console.log('[PricesService] getSymbolsFromInvestments called');
+    this.logger.log('Getting symbols from investments...');
+    
+    try {
+      const investments = await this.prisma.investment.findMany({
+        include: {
+          category: {
+            include: {
+              type: true,
+            },
           },
         },
-      },
-    });
+        orderBy: {
+          updatedAt: 'desc', // Ordenar por fecha de actualización (más recientes primero)
+        },
+      });
 
-    const cryptoSymbols = new Set<string>();
-    const equitySymbols = new Set<string>();
+      console.log(`[PricesService] Found ${investments.length} investments`);
+      this.logger.log(`Found ${investments.length} investments`);
 
-    investments.forEach((inv) => {
-      const concept = inv.concept?.toUpperCase().trim();
-      if (!concept) return;
+      // Usar Map para rastrear símbolos con información de prioridad
+      const cryptoMap = new Map<string, { count: number; lastUpdate: Date; totalAmount: number }>();
+      const equityMap = new Map<string, { count: number; lastUpdate: Date; totalAmount: number }>();
 
-      const typeName = inv.category?.type?.name?.toLowerCase();
-      if (typeName === 'crypto') {
-        cryptoSymbols.add(concept);
-      } else if (typeName === 'equity') {
-        equitySymbols.add(concept);
+      investments.forEach((inv) => {
+        const concept = inv.concept?.toUpperCase().trim();
+        if (!concept) {
+          this.logger.debug(`Investment ${inv.id} has no concept, skipping`);
+          return;
+        }
+
+        const typeName = inv.category?.type?.name?.toLowerCase();
+        if (typeName === 'crypto') {
+          const existing = cryptoMap.get(concept) || { count: 0, lastUpdate: inv.updatedAt, totalAmount: 0 };
+          cryptoMap.set(concept, {
+            count: existing.count + 1,
+            lastUpdate: inv.updatedAt > existing.lastUpdate ? inv.updatedAt : existing.lastUpdate,
+            totalAmount: existing.totalAmount + (inv.currentAmount || 0),
+          });
+          this.logger.debug(`Found crypto investment: ${concept} (ID: ${inv.id})`);
+        } else if (typeName === 'equity') {
+          const existing = equityMap.get(concept) || { count: 0, lastUpdate: inv.updatedAt, totalAmount: 0 };
+          equityMap.set(concept, {
+            count: existing.count + 1,
+            lastUpdate: inv.updatedAt > existing.lastUpdate ? inv.updatedAt : existing.lastUpdate,
+            totalAmount: existing.totalAmount + (inv.currentAmount || 0),
+          });
+          this.logger.debug(`Found equity investment: ${concept} (ID: ${inv.id})`);
+        } else {
+          this.logger.debug(`Investment ${inv.id} (${concept}) has type ${typeName}, skipping`);
+        }
+      });
+
+      // Convertir a arrays y ordenar por prioridad (más recientes y con mayor cantidad primero)
+      const cryptoArray = Array.from(cryptoMap.entries())
+        .sort((a, b) => {
+          // Priorizar por fecha de actualización (más reciente primero)
+          const dateDiff = b[1].lastUpdate.getTime() - a[1].lastUpdate.getTime();
+          if (Math.abs(dateDiff) > 86400000) { // Si la diferencia es más de 1 día, usar fecha
+            return dateDiff;
+          }
+          // Si las fechas son similares, priorizar por cantidad total
+          return b[1].totalAmount - a[1].totalAmount;
+        })
+        .map(([symbol]) => symbol);
+
+      const equityArray = Array.from(equityMap.entries())
+        .sort((a, b) => {
+          // Priorizar por fecha de actualización (más reciente primero)
+          const dateDiff = b[1].lastUpdate.getTime() - a[1].lastUpdate.getTime();
+          if (Math.abs(dateDiff) > 86400000) { // Si la diferencia es más de 1 día, usar fecha
+            return dateDiff;
+          }
+          // Si las fechas son similares, priorizar por cantidad total
+          return b[1].totalAmount - a[1].totalAmount;
+        })
+        .map(([symbol]) => symbol);
+
+      // Aplicar límites
+      const limitedCrypto = cryptoArray.slice(0, this.MAX_CRYPTO_SYMBOLS);
+      const limitedEquity = equityArray.slice(0, this.MAX_EQUITY_SYMBOLS);
+
+      if (cryptoArray.length > this.MAX_CRYPTO_SYMBOLS) {
+        const skipped = cryptoArray.length - this.MAX_CRYPTO_SYMBOLS;
+        const skippedSymbols = cryptoArray.slice(this.MAX_CRYPTO_SYMBOLS);
+        console.log(`[PricesService] Limiting crypto symbols: ${cryptoArray.length} -> ${limitedCrypto.length}, skipped ${skipped} symbols`);
+        this.logger.warn(`Limiting crypto symbols to ${this.MAX_CRYPTO_SYMBOLS} (skipped ${skipped}): ${skippedSymbols.join(', ')}`);
       }
-    });
 
-    return {
-      crypto: Array.from(cryptoSymbols),
-      equity: Array.from(equitySymbols),
-    };
+      if (equityArray.length > this.MAX_EQUITY_SYMBOLS) {
+        const skipped = equityArray.length - this.MAX_EQUITY_SYMBOLS;
+        const skippedSymbols = equityArray.slice(this.MAX_EQUITY_SYMBOLS);
+        console.log(`[PricesService] Limiting equity symbols: ${equityArray.length} -> ${limitedEquity.length}, skipped ${skipped} symbols`);
+        this.logger.warn(`Limiting equity symbols to ${this.MAX_EQUITY_SYMBOLS} (skipped ${skipped}): ${skippedSymbols.join(', ')}`);
+      }
+      
+      console.log(`[PricesService] Extracted ${limitedCrypto.length} crypto symbols (of ${cryptoArray.length} total): ${limitedCrypto.join(', ')}`);
+      console.log(`[PricesService] Extracted ${limitedEquity.length} equity symbols (of ${equityArray.length} total): ${limitedEquity.join(', ')}`);
+      this.logger.log(`Extracted ${limitedCrypto.length} crypto symbols from investments (${cryptoArray.length} total): ${limitedCrypto.join(', ')}`);
+      this.logger.log(`Extracted ${limitedEquity.length} equity symbols from investments (${equityArray.length} total): ${limitedEquity.join(', ')}`);
+
+      return {
+        crypto: limitedCrypto,
+        equity: limitedEquity,
+      };
+    } catch (error) {
+      console.error('[PricesService] Error in getSymbolsFromInvestments:', error);
+      this.logger.error(`Error in getSymbolsFromInvestments: ${error.message}`);
+      throw error;
+    }
   }
 
   /**
    * Obtiene precios de cryptos desde CoinGecko
    */
   async fetchCryptoPrices(symbols: string[]): Promise<Map<string, number>> {
-    if (symbols.length === 0) return new Map();
+    if (symbols.length === 0) {
+      this.logger.debug('No crypto symbols to fetch');
+      return new Map();
+    }
 
+    this.logger.log(`Fetching prices for ${symbols.length} crypto symbols: ${symbols.join(', ')}`);
     const prices = new Map<string, number>();
 
     try {
@@ -104,51 +198,99 @@ export class PricesService {
         const id = symbolToId[symbol] || symbol.toLowerCase();
         ids.push(id);
         symbolMap.set(id, symbol);
+        if (symbolToId[symbol]) {
+          this.logger.debug(`Crypto symbol ${symbol} mapped to CoinGecko ID: ${id}`);
+        } else {
+          this.logger.debug(`Crypto symbol ${symbol} using lowercase as CoinGecko ID: ${id}`);
+        }
       });
+
+      this.logger.log(`CoinGecko IDs to fetch: ${ids.join(', ')}`);
 
       if (ids.length === 0) return prices;
 
       // CoinGecko permite hasta 250 IDs por request
       const batchSize = 250;
+      const maxRetries = 3;
+      
       for (let i = 0; i < ids.length; i += batchSize) {
         const batch = ids.slice(i, i + batchSize);
         const idsParam = batch.join(',');
         const url = `https://api.coingecko.com/api/v3/simple/price?ids=${idsParam}&vs_currencies=usd`;
 
-        try {
-          const response = await fetch(url);
-              if (!response.ok) {
-                if (response.status === 429) {
-                  // Rate limiting - esperar más tiempo
-                  this.logger.warn(`Rate limit hit for crypto prices, waiting longer...`);
-                  await new Promise((resolve) => setTimeout(resolve, 5000));
-                  continue;
-                }
-                this.logger.error(`Error fetching crypto prices: ${response.statusText}`);
-                continue;
+        this.logger.log(`CoinGecko API call - Batch ${Math.floor(i / batchSize) + 1}: ${batch.length} IDs - URL: ${url}`);
+
+        let retryCount = 0;
+        let batchSuccess = false;
+
+        while (retryCount <= maxRetries && !batchSuccess) {
+          try {
+            const response = await fetch(url);
+            
+            if (!response.ok) {
+              if (response.status === 429) {
+                // Rate limiting - esperar más tiempo con backoff exponencial
+                const waitTime = Math.min(5000 * Math.pow(2, retryCount), 30000); // Máximo 30 segundos
+                this.logger.warn(`Rate limit hit for crypto prices batch ${i / batchSize + 1}, waiting ${waitTime}ms (attempt ${retryCount + 1}/${maxRetries + 1})...`);
+                await new Promise((resolve) => setTimeout(resolve, waitTime));
+                retryCount++;
+                continue; // Reintentar este batch
               }
+              
+              // Otros errores HTTP
+              if (retryCount < maxRetries) {
+                const waitTime = 2000 * (retryCount + 1);
+                this.logger.warn(`Error fetching crypto prices (${response.status}): ${response.statusText}, retrying in ${waitTime}ms...`);
+                await new Promise((resolve) => setTimeout(resolve, waitTime));
+                retryCount++;
+                continue; // Reintentar este batch
+              } else {
+                this.logger.error(`Error fetching crypto prices after ${maxRetries + 1} attempts: ${response.statusText}`);
+                break; // Salir del loop de reintentos para este batch
+              }
+            }
 
-          const data = await response.json();
+            // Si la respuesta es exitosa, procesar los datos
+            const data = await response.json();
 
-          for (const [id, priceData] of Object.entries(data)) {
-            const symbol = symbolMap.get(id);
-            if (symbol && priceData && typeof priceData === 'object' && 'usd' in priceData) {
-              prices.set(symbol, Number(priceData.usd));
+            this.logger.debug(`CoinGecko response for batch ${Math.floor(i / batchSize) + 1}: ${JSON.stringify(Object.keys(data))}`);
+
+            for (const [id, priceData] of Object.entries(data)) {
+              const symbol = symbolMap.get(id);
+              if (symbol && priceData && typeof priceData === 'object' && 'usd' in priceData) {
+                const price = Number(priceData.usd);
+                prices.set(symbol, price);
+                this.logger.debug(`CoinGecko price for ${symbol} (${id}): $${price}`);
+              } else if (!symbol) {
+                this.logger.warn(`CoinGecko returned price for unknown ID: ${id}`);
+              }
+            }
+
+            batchSuccess = true; // Marcar como exitoso para salir del loop de reintentos
+            this.logger.debug(`Successfully fetched batch ${Math.floor(i / batchSize) + 1}, got ${Object.keys(data).length} prices`);
+
+            // Rate limiting: CoinGecko permite 10-50 requests/minuto
+            if (i + batchSize < ids.length) {
+              await new Promise((resolve) => setTimeout(resolve, 1200)); // ~1.2 segundos entre requests
+            }
+          } catch (error) {
+            if (retryCount < maxRetries) {
+              const waitTime = 2000 * (retryCount + 1);
+              this.logger.warn(`Error fetching crypto batch (attempt ${retryCount + 1}/${maxRetries + 1}): ${error.message}, retrying in ${waitTime}ms...`);
+              await new Promise((resolve) => setTimeout(resolve, waitTime));
+              retryCount++;
+            } else {
+              this.logger.error(`Error fetching crypto batch after ${maxRetries + 1} attempts: ${error.message}`);
+              break; // Salir del loop de reintentos para este batch
             }
           }
-
-          // Rate limiting: CoinGecko permite 10-50 requests/minuto
-          if (i + batchSize < ids.length) {
-            await new Promise((resolve) => setTimeout(resolve, 1200)); // ~1.2 segundos entre requests
-          }
-        } catch (error) {
-          this.logger.error(`Error fetching crypto batch: ${error.message}`);
         }
       }
     } catch (error) {
       this.logger.error(`Error in fetchCryptoPrices: ${error.message}`);
     }
 
+    this.logger.log(`Successfully fetched ${prices.size} out of ${symbols.length} crypto prices`);
     return prices;
   }
 
@@ -156,8 +298,12 @@ export class PricesService {
    * Obtiene precios de equities desde Yahoo Finance
    */
   async fetchEquityPrices(symbols: string[]): Promise<Map<string, number>> {
-    if (symbols.length === 0) return new Map();
+    if (symbols.length === 0) {
+      this.logger.debug('No equity symbols to fetch');
+      return new Map();
+    }
 
+    this.logger.log(`Fetching prices for ${symbols.length} equity symbols: ${symbols.join(', ')}`);
     const prices = new Map<string, number>();
 
     try {
@@ -165,11 +311,13 @@ export class PricesService {
       const batchSize = 10;
       for (let i = 0; i < symbols.length; i += batchSize) {
         const batch = symbols.slice(i, i + batchSize);
+        this.logger.log(`Yahoo Finance API call - Batch ${Math.floor(i / batchSize) + 1}: ${batch.length} symbols - ${batch.join(', ')}`);
 
         await Promise.all(
           batch.map(async (symbol) => {
             try {
               const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=1d`;
+              this.logger.debug(`Yahoo Finance API call for ${symbol}: ${url}`);
               const response = await fetch(url, {
                 headers: {
                   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -194,9 +342,12 @@ export class PricesService {
                 const price = Number(result.meta.regularMarketPrice);
                 if (!isNaN(price) && price > 0) {
                   prices.set(symbol, price);
+                  this.logger.debug(`Yahoo Finance price for ${symbol}: $${price}`);
+                } else {
+                  this.logger.warn(`Invalid price data for ${symbol}: ${result.meta.regularMarketPrice}`);
                 }
               } else {
-                this.logger.warn(`No price data found for ${symbol}`);
+                this.logger.warn(`No price data found for ${symbol} - Response: ${JSON.stringify(data?.chart?.result?.[0]?.meta || {})}`);
               }
             } catch (error) {
               this.logger.error(`Error fetching equity price for ${symbol}: ${error.message}`);
@@ -213,6 +364,7 @@ export class PricesService {
       this.logger.error(`Error in fetchEquityPrices: ${error.message}`);
     }
 
+    this.logger.log(`Successfully fetched ${prices.size} out of ${symbols.length} equity prices`);
     return prices;
   }
 
@@ -225,6 +377,8 @@ export class PricesService {
   ): Promise<{ saved: number; errors: number }> {
     let saved = 0;
     let errors = 0;
+
+    this.logger.log(`Saving ${cryptoPrices.size} crypto prices and ${equityPrices.size} equity prices to database`);
 
     // Guardar precios de crypto
     for (const [symbol, price] of cryptoPrices.entries()) {
@@ -245,7 +399,7 @@ export class PricesService {
             source: 'coingecko',
           },
         });
-        this.logger.debug(`Saved crypto price for ${normalizedSymbol}: ${price}`);
+        this.logger.log(`Saved crypto price for ${normalizedSymbol}: $${price}`);
         saved++;
       } catch (error) {
         this.logger.error(`Error saving crypto price for ${symbol}: ${error.message}`);
@@ -272,7 +426,7 @@ export class PricesService {
             source: 'yahoo',
           },
         });
-        this.logger.debug(`Saved equity price for ${normalizedSymbol}: ${price}`);
+        this.logger.log(`Saved equity price for ${normalizedSymbol}: $${price}`);
         saved++;
       } catch (error) {
         this.logger.error(`Error saving equity price for ${symbol}: ${error.message}`);
@@ -280,6 +434,7 @@ export class PricesService {
       }
     }
 
+    this.logger.log(`Price save completed: ${saved} saved successfully, ${errors} errors`);
     return { saved, errors };
   }
 
@@ -287,29 +442,51 @@ export class PricesService {
    * Actualiza todos los precios desde las APIs
    * Con protección contra múltiples llamadas simultáneas y rate limiting
    */
-  async updateAllPrices(): Promise<{ saved: number; errors: number; crypto: number; equity: number; investmentsUpdated: number }> {
+  async updateAllPrices(forceUpdate = false): Promise<{ saved: number; errors: number; crypto: number; equity: number; investmentsUpdated: number }> {
+    console.log('[PricesService] updateAllPrices called, forceUpdate:', forceUpdate);
+    this.logger.log(`[PricesService] updateAllPrices called, forceUpdate: ${forceUpdate}`);
+    
     // Prevenir múltiples actualizaciones simultáneas
     if (this.updateLock) {
+      console.log('[PricesService] Update lock is active, skipping...');
       this.logger.warn('Price update already in progress, skipping...');
       throw new Error('Price update already in progress');
     }
 
     // Verificar intervalo mínimo entre actualizaciones (5 minutos)
+    // Pero permitir forzar actualización para actualizaciones automáticas
     const now = Date.now();
-    if (now - this.lastUpdateTime < this.MIN_UPDATE_INTERVAL) {
-      const secondsRemaining = Math.ceil((this.MIN_UPDATE_INTERVAL - (now - this.lastUpdateTime)) / 1000);
+    const timeSinceLastUpdate = now - this.lastUpdateTime;
+    console.log(`[PricesService] Time since last update: ${Math.ceil(timeSinceLastUpdate / 1000)}s, MIN_UPDATE_INTERVAL: ${this.MIN_UPDATE_INTERVAL}ms`);
+    
+    if (!forceUpdate && timeSinceLastUpdate < this.MIN_UPDATE_INTERVAL) {
+      const secondsRemaining = Math.ceil((this.MIN_UPDATE_INTERVAL - timeSinceLastUpdate) / 1000);
       const minutesRemaining = Math.ceil(secondsRemaining / 60);
-      this.logger.warn(`Price update called too soon (${Math.ceil((now - this.lastUpdateTime) / 1000)}s ago), skipping...`);
-      throw new Error(`Por favor espera ${minutesRemaining} minuto(s) antes de actualizar nuevamente`);
+      console.log(`[PricesService] Update called too soon, need to wait ${minutesRemaining} minute(s)`);
+      this.logger.warn(`Price update called too soon (${Math.ceil(timeSinceLastUpdate / 1000)}s ago), skipping...`);
+      // Para actualizaciones automáticas, retornar silenciosamente en lugar de lanzar error
+      // Esto permite que se mantengan los precios anteriores
+      return {
+        saved: 0,
+        errors: 0,
+        crypto: 0,
+        equity: 0,
+        investmentsUpdated: 0,
+      };
     }
+    
+    console.log('[PricesService] Proceeding with price update...');
 
     this.updateLock = true;
     this.lastUpdateTime = now;
 
     try {
+      console.log('[PricesService] Starting price update...');
       this.logger.log('Starting price update...');
 
+      console.log('[PricesService] Getting symbols from investments...');
       const { crypto: cryptoSymbols, equity: equitySymbols } = await this.getSymbolsFromInvestments();
+      console.log(`[PricesService] Got ${cryptoSymbols.length} crypto and ${equitySymbols.length} equity symbols`);
 
       // Siempre incluir GBP/USD en la actualización de precios
       const equitySymbolsWithGbp = new Set(equitySymbols);
@@ -318,6 +495,9 @@ export class PricesService {
       equitySymbolsWithGbp.add('GBP=X');
 
       this.logger.log(`Found ${cryptoSymbols.length} crypto symbols and ${equitySymbols.length} equity symbols`);
+      if (cryptoSymbols.length > 0) {
+        this.logger.log(`Crypto symbols: ${cryptoSymbols.join(', ')}`);
+      }
 
       const [cryptoPrices, equityPrices] = await Promise.all([
         this.fetchCryptoPrices(cryptoSymbols),
@@ -325,6 +505,10 @@ export class PricesService {
       ]);
 
       this.logger.log(`Fetched ${cryptoPrices.size} crypto prices and ${equityPrices.size} equity prices`);
+      if (cryptoSymbols.length > 0 && cryptoPrices.size < cryptoSymbols.length) {
+        const missingSymbols = cryptoSymbols.filter(s => !cryptoPrices.has(s));
+        this.logger.warn(`Missing prices for ${missingSymbols.length} crypto symbols: ${missingSymbols.join(', ')}`);
+      }
 
       const { saved, errors } = await this.savePrices(cryptoPrices, equityPrices);
 
@@ -380,11 +564,23 @@ export class PricesService {
       
       try {
         if (isCrypto) {
+          this.logger.log(`Fetching individual crypto price for symbol: ${normalizedSymbol}`);
           const cryptoPrices = await this.fetchCryptoPrices([normalizedSymbol]);
           fetchedPrice = cryptoPrices.get(normalizedSymbol) || null;
+          if (fetchedPrice) {
+            this.logger.log(`Got crypto price for ${normalizedSymbol}: $${fetchedPrice}`);
+          } else {
+            this.logger.warn(`No crypto price found for ${normalizedSymbol}`);
+          }
         } else {
+          this.logger.log(`Fetching individual equity price for symbol: ${normalizedSymbol}`);
           const equityPrices = await this.fetchEquityPrices([normalizedSymbol]);
           fetchedPrice = equityPrices.get(normalizedSymbol) || null;
+          if (fetchedPrice) {
+            this.logger.log(`Got equity price for ${normalizedSymbol}: $${fetchedPrice}`);
+          } else {
+            this.logger.warn(`No equity price found for ${normalizedSymbol}`);
+          }
         }
       } catch (apiError: any) {
         // Manejar errores de rate limiting
