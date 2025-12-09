@@ -1747,7 +1747,24 @@ export class UploadService {
 
     // Formato compacto: solo nombres de categorías y conceptos (sin IDs en el prompt principal)
     const categoryNames = Array.from(categoriesMap.values()).map(c => c.name).sort();
-    const conceptNames = Array.from(conceptsMap.values()).map(c => c.concept).sort();
+    let conceptNames = Array.from(conceptsMap.values()).map(c => c.concept).sort();
+    
+    // Si hay banco seleccionado, asegurar que su concepto esté en la lista de conceptos disponibles
+    if (selectedBank && selectedBank.concept) {
+      const bankConceptLower = selectedBank.concept.toLowerCase();
+      const conceptExists = conceptNames.some(c => c.toLowerCase() === bankConceptLower);
+      if (!conceptExists) {
+        // Agregar el concepto del banco a la lista si no existe
+        conceptNames.push(selectedBank.concept);
+        conceptNames = conceptNames.sort();
+        // También agregarlo al conceptsMap para que esté disponible en el procesamiento posterior
+        conceptsMap.set(bankConceptLower, {
+          concept: selectedBank.concept,
+          categoryId: selectedBank.categoryId || '',
+          categoryName: selectedBank.categoryName || '',
+        });
+      }
+    }
 
     // Preparar mapeos de comercios para el prompt (formato compacto)
     const merchantMappingsText = this.MERCHANT_MAPPINGS.map(m => 
@@ -1764,14 +1781,43 @@ export class UploadService {
              !trimmed.includes('SUBTOTAL');
     }).length;
 
+    // Construir información sobre el banco seleccionado si existe
+    let bankInfoText = '';
+    let sectionInfoText = '';
+    
+    if (sectionTitle) {
+      sectionInfoText = `\nCURRENT SECTION: "${sectionTitle}"`;
+    }
+    
+    if (selectedBank && selectedBank.concept) {
+      // Buscar la categoría "mantenimiento bancos" o "mantenimiento banco"
+      const bankMaintenanceCategory = categoriesMap.get('mantenimiento bancos') || 
+                                      categoriesMap.get('mantenimiento banco') ||
+                                      null;
+      
+      const bankCategoryName = bankMaintenanceCategory?.name || selectedBank.categoryName || 'mantenimiento bancos';
+      bankInfoText = `
+
+BANK MAINTENANCE INFORMATION (CRITICAL - HIGHEST PRIORITY):
+- Current section: "${sectionTitle || 'Unknown'}"
+- If the section title contains "Impuestos, cargos e intereses", "impuestos", "cargos", "intereses" or similar tax/interest/fee terms, ALL records from this section MUST be assigned to:
+  - Category: "${bankCategoryName}"
+  - Concept: "${selectedBank.concept}" (use this EXACT concept name - DO NOT modify it)
+  - mappingStatus: "ready"
+- This rule has HIGHEST PRIORITY and overrides all other mappings for tax/interest/fee records.
+- Apply this rule to ALL records in the tax/interest/fee section, regardless of their individual descriptions.
+- IMPORTANT: Use the exact concept name "${selectedBank.concept}" - do not try to match it with other concepts.`;
+    }
+
     // Prompt optimizado y más corto
-    const prompt = `Extract ALL transactions from this financial summary. Process ${estimatedLinesBefore} transactions.
+    const prompt = `Extract ALL transactions from this financial summary. Process ${estimatedLinesBefore} transactions.${sectionInfoText}
 
 RULES:
 - Process lines starting with DD-MMM-YY date format
 - Ignore: "TOTAL CONSUMOS", "SALDO ACTUAL", "SALDO ANTERIOR", "SUBTOTAL", headers
 - Extract: date (convert to YYYY-MM-DD), concept (remove MERCADOPAGO prefix, remove trailing numbers), amount (normalize: remove thousands separators, use dot as decimal), currency (USD if DÓLARES column has value, else ARS)
 - Clean concept: remove "MERCADOPAGO"/"MERPAGO", remove trailing numbers/codes, remove asterisks
+${bankInfoText}
 
 MERCHANT MAPPINGS (use exact match):
 ${merchantMappingsText}
@@ -1782,11 +1828,12 @@ ${conceptNames.join(', ')}
 CATEGORIES:
 ${categoryNames.join(', ')}
 
-MAPPING:
-1. Check merchant mappings first (HIGH priority)
-2. Match concept from AVAILABLE CONCEPTS list (exact > partial > fuzzy)
-3. Set mappingStatus: "ready" (high confidence), "needs_confirmation" (medium/low), "needs_mapping" (only if impossible)
-4. ALWAYS assign a concept if possible (use "needs_confirmation" rather than "needs_mapping")
+MAPPING PRIORITY (in order):
+1. Bank maintenance rule (if section is "Impuestos, cargos e intereses" and bank info is provided) - HIGHEST PRIORITY
+2. Check merchant mappings (HIGH priority)
+3. Match concept from AVAILABLE CONCEPTS list (exact > partial > fuzzy)
+4. Set mappingStatus: "ready" (high confidence), "needs_confirmation" (medium/low), "needs_mapping" (only if impossible)
+5. ALWAYS assign a concept if possible (use "needs_confirmation" rather than "needs_mapping")
 
 RESPONSE (JSON only):
 {
@@ -1937,17 +1984,35 @@ ${processedSummary}`;
           mappingStatus = (!categoryId || !conceptValue) ? 'needs_mapping' : 'needs_confirmation';
         }
         
-        if (merchantMapping.categoryId && merchantMapping.concept) {
+        // Si es la sección de impuestos y hay banco seleccionado, asignar a "mantenimiento bancos" con el concepto del banco (prioridad máxima)
+        // Esta regla tiene la MÁXIMA prioridad y debe aplicarse ANTES que cualquier otro mapeo
+        if (isTaxesSection && selectedBank && selectedBank.concept) {
+          // Buscar la categoría "mantenimiento bancos" o "mantenimiento banco"
+          const bankMaintenanceCategory = categoriesMap.get('mantenimiento bancos') || 
+                                          categoriesMap.get('mantenimiento banco') ||
+                                          null;
+          
+          if (bankMaintenanceCategory) {
+            categoryId = bankMaintenanceCategory.id;
+            categoryName = bankMaintenanceCategory.name;
+            conceptValue = selectedBank.concept; // Usar el concepto exacto del banco seleccionado
+            mappingStatus = 'ready';
+            // Log para debugging
+            console.log(`[Bank Maintenance] Applied to record: category="${categoryName}", concept="${conceptValue}"`);
+          } else if (selectedBank.categoryId) {
+            // Fallback: usar la categoría del banco seleccionado si no existe "mantenimiento bancos"
+            categoryId = selectedBank.categoryId;
+            categoryName = selectedBank.categoryName;
+            conceptValue = selectedBank.concept; // Usar el concepto exacto del banco seleccionado
+            mappingStatus = 'ready';
+            // Log para debugging
+            console.log(`[Bank Maintenance] Applied (fallback) to record: category="${categoryName}", concept="${conceptValue}"`);
+          }
+        } else if (merchantMapping.categoryId && merchantMapping.concept) {
           // Aplicar el mapeo del comercio (alta confianza)
           categoryId = merchantMapping.categoryId;
           conceptValue = merchantMapping.concept;
           categoryName = merchantMapping.categoryName;
-          mappingStatus = 'ready';
-        } else if (isTaxesSection && selectedBank && selectedBank.categoryId && selectedBank.concept) {
-          // Si es la sección de impuestos y hay banco seleccionado, asignar al banco (alta confianza)
-          categoryId = selectedBank.categoryId;
-          conceptValue = selectedBank.concept;
-          categoryName = selectedBank.categoryName;
           mappingStatus = 'ready';
         } else if (mappingStatus === 'needs_mapping' && conceptValue) {
           // Si tiene concepto pero está marcado como needs_mapping, cambiar a needs_confirmation
@@ -1981,7 +2046,7 @@ ${processedSummary}`;
           originalText: cleanedOriginalText || JSON.stringify(record),
           originalCurrency: originalCurrency === 'USD' ? 'USD' : undefined, // Guardar la moneda original si era USD
           suggestedConcept: record.suggestedConcept || null, // Include suggested concept if provided
-          isTaxesSection: isTaxesSection && selectedBank && selectedBank.categoryId && selectedBank.concept ? true : false, // Marcar registros de impuestos
+          isTaxesSection: (isTaxesSection && selectedBank && selectedBank.categoryId && selectedBank.concept) ? true : false, // Marcar registros de impuestos
         };
       }));
 
@@ -2021,8 +2086,37 @@ ${processedSummary}`;
       }
 
       // Separar registros de impuestos de los normales
-      const taxesRecords = allRecords.filter((r: any) => r.isTaxesSection === true);
-      const normalRecords = allRecords.filter((r: any) => !(r as any).isTaxesSection);
+      // También considerar registros que tienen la categoría "mantenimiento bancos" y el concepto del banco seleccionado
+      const taxesRecords = allRecords.filter((r: any) => {
+        if (r.isTaxesSection === true) return true;
+        // Si el registro tiene la categoría "mantenimiento bancos" y el concepto del banco seleccionado, también es un registro de impuestos
+        if (selectedBank && selectedBank.concept) {
+          const bankMaintenanceCategory = categoriesMap.get('mantenimiento bancos') || 
+                                        categoriesMap.get('mantenimiento banco') ||
+                                        null;
+          const hasBankMaintenanceCategory = bankMaintenanceCategory && r.categoryId === bankMaintenanceCategory.id;
+          const hasBankConcept = r.concept && r.concept.toLowerCase() === selectedBank.concept.toLowerCase();
+          if (hasBankMaintenanceCategory && hasBankConcept) {
+            return true;
+          }
+        }
+        return false;
+      });
+      const normalRecords = allRecords.filter((r: any) => {
+        if (r.isTaxesSection === true) return false;
+        // Excluir registros que tienen la categoría "mantenimiento bancos" y el concepto del banco seleccionado
+        if (selectedBank && selectedBank.concept) {
+          const bankMaintenanceCategory = categoriesMap.get('mantenimiento bancos') || 
+                                        categoriesMap.get('mantenimiento banco') ||
+                                        null;
+          const hasBankMaintenanceCategory = bankMaintenanceCategory && r.categoryId === bankMaintenanceCategory.id;
+          const hasBankConcept = r.concept && r.concept.toLowerCase() === selectedBank.concept.toLowerCase();
+          if (hasBankMaintenanceCategory && hasBankConcept) {
+            return false;
+          }
+        }
+        return true;
+      });
       
       // Si hay registros de impuestos y banco seleccionado, consolidarlos en un solo registro
       let consolidatedTaxesRecord = null;
@@ -2053,23 +2147,40 @@ ${processedSummary}`;
         };
       }
       
-      // Combinar registros normales con el registro consolidado de impuestos (si existe)
+      // Combinar registros normales con los registros de impuestos
+      // IMPORTANTE: Mostrar los registros de impuestos individualmente con la categoría y concepto del banco
       const sortedRecords = [...normalRecords];
-      if (consolidatedTaxesRecord) {
-        sortedRecords.push(consolidatedTaxesRecord);
-      } else if (taxesRecords.length > 0) {
-        // Si no se pudo consolidar pero hay registros de impuestos, agregarlos al final
+      if (taxesRecords.length > 0) {
+        // Agregar los registros de impuestos individuales (ya tienen la categoría y concepto correctos)
         sortedRecords.push(...taxesRecords);
+        // Si hay un registro consolidado, también agregarlo al final para referencia
+        // pero los registros individuales ya están incluidos arriba
+        if (consolidatedTaxesRecord) {
+          // No agregar el consolidado si ya tenemos los individuales, o agregarlo como referencia adicional
+          // sortedRecords.push(consolidatedTaxesRecord);
+        }
       }
 
       const readyCount = sortedRecords.filter(r => r.mappingStatus === 'ready').length;
       const needsConfirmationCount = sortedRecords.filter(r => r.mappingStatus === 'needs_confirmation').length;
       const needsMappingCount = sortedRecords.filter(r => r.mappingStatus === 'needs_mapping').length;
 
+      // Construir mensaje con información sobre mantenimientos de bancos
+      let message = `Se procesaron ${sortedRecords.length} registros. ${readyCount} listos, ${needsConfirmationCount} necesitan confirmación, ${needsMappingCount} necesitan mapeo.`;
+      
+      if (consolidatedTaxesRecord) {
+        const bankMaintenanceCategory = categoriesMap.get('mantenimiento bancos') || 
+                                        categoriesMap.get('mantenimiento banco') ||
+                                        null;
+        const categoryName = bankMaintenanceCategory?.name || consolidatedTaxesRecord.categoryName;
+        message += `\n\n💰 Mantenimientos de bancos: Se consolidaron ${taxesRecords.length} registros de "Impuestos, cargos e intereses" en un registro de ${categoryName} con concepto "${consolidatedTaxesRecord.concept}" por un total de ${consolidatedTaxesRecord.amount.toLocaleString('es-AR', { style: 'currency', currency: 'ARS', minimumFractionDigits: 0, maximumFractionDigits: 0 })}.`;
+      }
+
       return {
         records: sortedRecords,
         unmappedItems: [], // Ya están incluidos en records
-        message: `Se procesaron ${sortedRecords.length} registros. ${readyCount} listos, ${needsConfirmationCount} necesitan confirmación, ${needsMappingCount} necesitan mapeo.`,
+        message: message,
+        consolidatedTaxesRecord: consolidatedTaxesRecord || null, // Incluir información del registro consolidado
       };
     } catch (error) {
       if (error instanceof BadRequestException) {
